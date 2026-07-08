@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Cosmic Maps
+Comment=Map application for COSMIC Desktop
+Type=Application
+Icon=com.github.ercalvez.cosmic-maps
+Exec=cosmic-maps %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+MimeType=
