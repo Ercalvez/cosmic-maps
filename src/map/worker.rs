@@ -22,15 +22,12 @@ use maplibre::{
     vector::{DefaultVectorTransferables, VectorPlugin},
 };
 
-use super::state::{MapCommand, MapImage};
+use super::camera::TileId;
+use super::state::{MapCommand, MapImage, RenderedTile};
 
-const TILE_SIZE: u32 = 512;
+const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
 
-/// Tile shown until camera handling exists: Berlin at zoom 12. The default tile
-/// source of maplibre-rs only serves Germany.
-const INITIAL_TILE: (i32, i32, u8) = (2200, 1343, 12);
-
-pub fn spawn(rx: Receiver<MapCommand>, tx: Sender<MapImage>) {
+pub fn spawn(rx: Receiver<MapCommand>, tx: Sender<RenderedTile>) {
     // `HeadlessMap` is not `Send`, so it lives on its own thread with its own runtime.
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -42,31 +39,46 @@ pub fn spawn(rx: Receiver<MapCommand>, tx: Sender<MapImage>) {
     });
 }
 
-async fn run(rx: Receiver<MapCommand>, tx: Sender<MapImage>) {
+async fn run(rx: Receiver<MapCommand>, tx: Sender<RenderedTile>) {
     let style = Style::default();
-    let mut map = create_map(style.clone(), tx).await;
+    let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+    let mut map = create_map(style.clone(), frame_tx).await;
     println!("MapLibre initialized");
 
-    let (x, y, z) = INITIAL_TILE;
-    let coords = WorldTileCoords::from((x, y, z.into()));
+    let mut queue: Vec<TileId> = Vec::new();
 
-    // Blocking here is fine: this thread only serves the map.
-    while let Ok(command) = rx.recv() {
-        match command {
-            MapCommand::Redraw => render_tile(&mut map, &style, coords).await,
-
-            MapCommand::Resize(_, _) => {
-                // TODO: recreate the renderer with the new size
-            }
-
-            MapCommand::Pan(_, _) => {
-                // TODO: camera update
-            }
-
-            MapCommand::Zoom(_) => {
-                // TODO: zoom update
-            }
+    loop {
+        // Block while idle. Blocking is fine: this thread only serves the map.
+        if queue.is_empty() {
+            let Ok(command) = rx.recv() else { break };
+            apply(command, &mut queue);
         }
+
+        // Pick up newer requests so tiles that scrolled away are dropped.
+        while let Ok(command) = rx.try_recv() {
+            apply(command, &mut queue);
+        }
+
+        if queue.is_empty() {
+            continue;
+        }
+        let tile = queue.remove(0);
+
+        let image = if render_tile(&mut map, &style, tile).await {
+            frame_rx.try_recv().ok()
+        } else {
+            None
+        };
+
+        if tx.send(RenderedTile { tile, image }).is_err() {
+            break;
+        }
+    }
+}
+
+fn apply(command: MapCommand, queue: &mut Vec<TileId>) {
+    match command {
+        MapCommand::Want(tiles) => *queue = tiles,
     }
 }
 
@@ -86,25 +98,28 @@ async fn create_map(style: Style, tx: Sender<MapImage>) -> HeadlessMap {
     HeadlessMap::new(style, renderer, kernel, plugins).expect("failed to create map")
 }
 
-async fn render_tile(map: &mut HeadlessMap, style: &Style, coords: WorldTileCoords) {
-    let tile = match map.fetch_tile(coords).await {
-        Ok(tile) => tile,
+/// Renders a tile; the frame is sent to the channel given to `FrameCapturePlugin`.
+async fn render_tile(map: &mut HeadlessMap, style: &Style, tile: TileId) -> bool {
+    let coords = WorldTileCoords::from((tile.x, tile.y, tile.z.into()));
+    let data = match map.fetch_tile(coords).await {
+        Ok(data) => data,
         Err(err) => {
             eprintln!("failed to fetch tile {coords}: {err:?}");
-            return;
+            return false;
         }
     };
 
     let mut layers = Vec::new();
     for layer in style.layers.iter().filter(|l| l.source_layer.is_some()) {
-        layers.extend(map.process_tile(tile.clone(), layer).await);
+        layers.extend(map.process_tile(data.clone(), layer).await);
     }
 
     // Runs the schedule, which ends with `CaptureFrameSystem` sending the image.
     map.render_tile(layers);
+    true
 }
 
-/// Sends every rendered frame back to the UI thread.
+/// Sends every rendered frame through `tx`.
 struct FrameCapturePlugin {
     tx: Sender<MapImage>,
 }

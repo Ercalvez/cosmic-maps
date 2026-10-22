@@ -2,11 +2,11 @@
 
 use crate::config::Config;
 use crate::fl;
-use crate::map::MapView;
+use crate::map::{MapEvent, MapView};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
-use cosmic::iced::{Alignment, Length, Subscription, futures};
+use cosmic::iced::{Alignment, Length, Subscription, event, futures, keyboard};
 use cosmic::prelude::*;
 use cosmic::widget::{self, about::About, icon, menu, nav_bar};
 use futures::SinkExt;
@@ -15,6 +15,8 @@ use std::time::Duration;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
+/// Distance the map moves per arrow key press, in pixels.
+const PAN_STEP: f64 = 128.0;
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -32,11 +34,7 @@ pub struct AppModel {
     /// Key bindings for the application's menu bar.
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// Configuration data that persists between application runs.
-    config: Config,
-    /// Time active
-    time: u32,
-    /// Toggle the watch subscription
-    watch_is_active: bool,
+    config: Config
 }
 
 /// Messages emitted by the application and its widgets.
@@ -44,12 +42,9 @@ pub struct AppModel {
 pub enum Message {
     LaunchUrl(String),
     ToggleContextPage(ContextPage),
-    ToggleWatch,
     UpdateConfig(Config),
-    WatchTick(u32),
-    MapPan { dx: f64, dy: f64 },
-    MapZoomed { level: f64 },
-    MapTick
+    Map(MapEvent),
+    MapTick,
 }
 
 /// Create a COSMIC application from the app model
@@ -126,12 +121,8 @@ impl cosmic::Application for AppModel {
                     }
                 })
                 .unwrap_or_default(),
-            time: 0,
-            watch_is_active: false,
             map: MapView::new()
         };
-
-        app.map.redraw();
 
         // Create a startup command that sets the window title.
         let command = app.update_title();
@@ -186,22 +177,9 @@ impl cosmic::Application for AppModel {
                     .align_y(Alignment::End)
                     .spacing(space_s);
 
-                let counter_label = ["Watch: ", self.time.to_string().as_str()].concat();
-                let section = cosmic::widget::settings::section().add(
-                    cosmic::widget::settings::item::builder(counter_label).control(
-                        widget::button::text(if self.watch_is_active {
-                            "Stop"
-                        } else {
-                            "Start"
-                        })
-                        .on_press(Message::ToggleWatch),
-                    ),
-                );
-
                 widget::column::with_capacity(2)
                     .push(header)
-                    .push(section)
-                    .push(self.map.view())
+                    .push(self.map.view(Message::Map))
                     .spacing(space_s)
                     .height(Length::Fill)
                     .into()
@@ -267,21 +245,34 @@ impl cosmic::Application for AppModel {
                 }),
         ];
 
-        // Conditionally enables a timer that emits a message every second.
-        if self.watch_is_active {
-            subscriptions.push(Subscription::run(|| {
-                cosmic::iced::stream::channel(1, |mut emitter: futures::channel::mpsc::Sender<_>| async move {
-                    let mut time = 1;
-                    let mut interval = tokio::time::interval(Duration::from_secs(1));
+        subscriptions.push(event::listen_with(|event, status, _window| {
+            // Leave keys alone when a widget, such as a text input, used them.
+            if status == event::Status::Captured {
+                return None;
+            }
 
-                    loop {
-                        interval.tick().await;
-                        _ = emitter.send(Message::WatchTick(time)).await;
-                        time += 1;
-                    }
-                })
-            }));
-        }
+            let event::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event else {
+                return None;
+            };
+
+            let zoom = |delta| Some(Message::Map(MapEvent::Zoom { delta, anchor: None }));
+            match key.as_ref() {
+                keyboard::Key::Character("+" | "=") => return zoom(1.0),
+                keyboard::Key::Character("-") => return zoom(-1.0),
+                _ => {}
+            }
+
+            // Arrow keys move the view, so the content moves the other way.
+            let (dx, dy) = match key {
+                keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => (PAN_STEP, 0.0),
+                keyboard::Key::Named(keyboard::key::Named::ArrowRight) => (-PAN_STEP, 0.0),
+                keyboard::Key::Named(keyboard::key::Named::ArrowUp) => (0.0, PAN_STEP),
+                keyboard::Key::Named(keyboard::key::Named::ArrowDown) => (0.0, -PAN_STEP),
+                _ => return None,
+            };
+
+            Some(Message::Map(MapEvent::Pan { dx, dy }))
+        }));
 
         subscriptions.push(Subscription::run(|| {
         cosmic::iced::stream::channel(1, |mut emitter: futures::channel::mpsc::Sender<_>| async move {
@@ -305,23 +296,12 @@ impl cosmic::Application for AppModel {
     /// on the application's async runtime.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::MapPan { dx, dy } => {
-                self.map.pan(dx, dy);
-            }
-
-            Message::MapZoomed { level } => {
-                self.map.zoom(level);
-            }
-            Message::WatchTick(time) => {
-                self.time = time; 
+            Message::Map(event) => {
+                self.map.on_event(event);
             }
 
             Message::MapTick => { 
                 self.map.update_image();
-            }
-
-            Message::ToggleWatch => {
-                self.watch_is_active = !self.watch_is_active;
             }
 
             Message::ToggleContextPage(context_page) => {

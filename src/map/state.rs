@@ -1,8 +1,10 @@
 use std::sync::mpsc::{Receiver, Sender};
 
+use super::camera::TileId;
+
 pub struct MapState {
     renderer_tx: Sender<MapCommand>,
-    image_rx: Receiver<MapImage>,
+    tile_rx: Receiver<RenderedTile>,
 }
 
 pub struct MapImage {
@@ -11,39 +13,35 @@ pub struct MapImage {
     pub pixels: Vec<u8>,
 }
 
+/// Result of rendering one tile; `image` is `None` when the tile could not be loaded.
+pub struct RenderedTile {
+    pub tile: TileId,
+    pub image: Option<MapImage>,
+}
+
 pub enum MapCommand {
-    Resize(u32, u32),
-    Pan(f64, f64),
-    Zoom(f64),
-    Redraw,
+    /// Tiles to render, in priority order. Replaces any earlier request.
+    Want(Vec<TileId>),
 }
 
 impl MapState {
     pub fn new() -> Self {
         let (renderer_tx, renderer_rx) = std::sync::mpsc::channel();
-        let (image_tx, image_rx) = std::sync::mpsc::channel();
+        let (tile_tx, tile_rx) = std::sync::mpsc::channel();
 
-        crate::map::worker::spawn(renderer_rx, image_tx);
+        crate::map::worker::spawn(renderer_rx, tile_tx);
 
         Self {
             renderer_tx,
-            image_rx,
+            tile_rx,
         }
     }
 
-    pub fn pan(&self, dx: f64, dy: f64) {
-        let _ = self.renderer_tx.send(MapCommand::Pan(dx, dy));
+    pub fn want(&self, tiles: Vec<TileId>) {
+        let _ = self.renderer_tx.send(MapCommand::Want(tiles));
     }
 
-    pub fn zoom(&self, level: f64) {
-        let _ = self.renderer_tx.send(MapCommand::Zoom(level));
-    }
-
-    pub fn try_image(&self) -> Option<MapImage> {
-        self.image_rx.try_recv().ok()
-    }
-
-    pub fn redraw(&self) {
-        let _ = self.renderer_tx.send(MapCommand::Redraw);
+    pub fn try_tile(&self) -> Option<RenderedTile> {
+        self.tile_rx.try_recv().ok()
     }
 }
