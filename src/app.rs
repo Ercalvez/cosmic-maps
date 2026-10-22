@@ -2,6 +2,7 @@
 
 use crate::config::Config;
 use crate::fl;
+use crate::map::MapView;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
@@ -24,6 +25,8 @@ pub struct AppModel {
     context_page: ContextPage,
     /// The about page for this app.
     about: About,
+
+    map: MapView,
     /// Contains items assigned to the nav bar panel.
     nav: nav_bar::Model,
     /// Key bindings for the application's menu bar.
@@ -44,6 +47,9 @@ pub enum Message {
     ToggleWatch,
     UpdateConfig(Config),
     WatchTick(u32),
+    MapPan { dx: f64, dy: f64 },
+    MapZoomed { level: f64 },
+    MapTick
 }
 
 /// Create a COSMIC application from the app model
@@ -122,7 +128,10 @@ impl cosmic::Application for AppModel {
                 .unwrap_or_default(),
             time: 0,
             watch_is_active: false,
+            map: MapView::new()
         };
+
+        app.map.redraw();
 
         // Create a startup command that sets the window title.
         let command = app.update_title();
@@ -192,6 +201,7 @@ impl cosmic::Application for AppModel {
                 widget::column::with_capacity(2)
                     .push(header)
                     .push(section)
+                    .push(self.map.view())
                     .spacing(space_s)
                     .height(Length::Fill)
                     .into()
@@ -273,6 +283,19 @@ impl cosmic::Application for AppModel {
             }));
         }
 
+        subscriptions.push(Subscription::run(|| {
+        cosmic::iced::stream::channel(1, |mut emitter: futures::channel::mpsc::Sender<_>| async move {
+                    let mut interval = tokio::time::interval(
+                        Duration::from_millis(100)
+                    );
+
+                    loop {
+                        interval.tick().await;
+                        _ = emitter.send(Message::MapTick).await;
+                    }
+                })
+}));
+
         Subscription::batch(subscriptions)
     }
 
@@ -282,8 +305,19 @@ impl cosmic::Application for AppModel {
     /// on the application's async runtime.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
+            Message::MapPan { dx, dy } => {
+                self.map.pan(dx, dy);
+            }
+
+            Message::MapZoomed { level } => {
+                self.map.zoom(level);
+            }
             Message::WatchTick(time) => {
-                self.time = time;
+                self.time = time; 
+            }
+
+            Message::MapTick => { 
+                self.map.update_image();
             }
 
             Message::ToggleWatch => {
