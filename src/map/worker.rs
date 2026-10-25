@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Renders tiles with MapLibre on a thread of its own.
+
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};

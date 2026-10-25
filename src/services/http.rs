@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 //! HTTP access shared by the online services.
 
 use std::sync::LazyLock;

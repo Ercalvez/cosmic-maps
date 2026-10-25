@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 //! Online services: place details (Nominatim), search (Photon) and routes
 //! (Transitous).
 

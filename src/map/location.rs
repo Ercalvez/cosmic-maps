@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 //! The user's position, from the XDG Location portal, the way COSMIC apps reach
 //! desktop services. The portal asks for permission and gets positions from GeoClue.
 

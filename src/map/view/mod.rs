@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! The map widget's state, events and view.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -22,7 +26,7 @@ use markers::MarkerCanvas;
 pub use routes::RouteOverlay;
 use routes::{ROUTE_PADDING, bounds, route_points};
 
-/// Initial view: Berlin.
+/// View on the first run, until the user's position is known: Berlin.
 const INITIAL_CENTER: (f64, f64) = (52.52, 13.405);
 const INITIAL_ZOOM: f64 = 12.0;
 
@@ -143,15 +147,19 @@ pub struct MapView {
 }
 
 impl MapView {
-    /// Creates the map. The stream yields each tile when it is rendered; feed them
-    /// back through [`MapView::insert_tile`].
-    pub fn new(palette: MapPalette) -> (Self, impl Stream<Item = RenderedTile> + Send + 'static) {
-        let (lat, lon) = INITIAL_CENTER;
+    /// Creates the map, looking at `start` (latitude, longitude, zoom) if given. The
+    /// stream yields each tile when it is rendered; feed them back through
+    /// [`MapView::insert_tile`].
+    pub fn new(
+        palette: MapPalette,
+        start: Option<(f64, f64, f64)>,
+    ) -> (Self, impl Stream<Item = RenderedTile> + Send + 'static) {
+        let (lat, lon, zoom) = start.unwrap_or((INITIAL_CENTER.0, INITIAL_CENTER.1, INITIAL_ZOOM));
         let (state, tiles) = MapState::new(palette);
 
         let map = Self {
             state,
-            camera: Camera::from_lat_lon(lat, lon, INITIAL_ZOOM),
+            camera: Camera::from_lat_lon(lat, lon, zoom),
             viewport: Size::ZERO,
             tiles: HashMap::new(),
             palette,
@@ -218,6 +226,10 @@ impl MapView {
     /// Latitude and longitude of the center of the map.
     pub fn center(&self) -> (f64, f64) {
         self.camera.center_lat_lon()
+    }
+
+    pub fn zoom(&self) -> f64 {
+        self.camera.zoom()
     }
 
     pub fn insert_details(&mut self, osm_id: OsmId, result: Result<PoiDetails, services::Error>) {

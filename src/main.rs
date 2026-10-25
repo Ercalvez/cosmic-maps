@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
+mod config;
 mod directions;
+mod i18n;
 mod key_bind;
+mod map;
 mod place_view;
 mod route_view;
 mod search_box;
-mod map;
 mod services;
-mod config;
-mod i18n;
 
 fn main() -> cosmic::iced::Result {
     // Warnings by default, without those maplibre gives for every tile;

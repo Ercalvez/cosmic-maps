@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 //! Map colours derived from the active COSMIC theme, so light and dark mode, high
 //! contrast and custom themes carry over to the map.
 

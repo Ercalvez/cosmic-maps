@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 //! Walking and public transit routes from Transitous, the community-run MOTIS
 //! service GNOME Maps also uses for public transit.
 //!

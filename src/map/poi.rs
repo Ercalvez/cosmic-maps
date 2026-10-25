@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Points of interest read from the vector tiles.
+
 use geozero::mvt::{Message, Tile, tile};
 use i18n_embed::DesktopLanguageRequester;
 

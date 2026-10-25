@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::config::Config;
+//! The application: the header search, the map and the context drawer, and the
+//! messages between them.
+
+use crate::config::{MapPosition, State};
 use crate::directions::{self, Directions, RouteRequest};
 use crate::fl;
 use crate::key_bind;
@@ -16,7 +19,7 @@ use crate::services::transitous;
 use crate::services;
 use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
 use cosmic::app::context_drawer;
-use cosmic::cosmic_config::{self, CosmicConfigEntry};
+use cosmic::cosmic_config;
 use cosmic::iced::futures::StreamExt;
 use cosmic::iced::{Length, Subscription, event, keyboard};
 use cosmic::prelude::*;
@@ -31,14 +34,11 @@ const PAN_STEP: f64 = 128.0;
 const SEARCH_INPUT_WIDTH: f32 = 240.0;
 const SEARCH_RESULTS_WIDTH: f32 = 360.0;
 
-/// The application model stores app-specific state used to describe its interface and
-/// drive its logic.
+/// The app: the map, with the header search and the context drawer beside it.
 pub struct AppModel {
-    /// Application state which is managed by the COSMIC runtime.
     core: cosmic::Core,
-    /// Display a context drawer with the designated page if defined.
+    /// The page shown in the context drawer while it is open.
     context_page: ContextPage,
-    /// The about page for this app.
     about: About,
 
     map: MapView,
@@ -46,8 +46,9 @@ pub struct AppModel {
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// More keys for the same actions, not shown in menus.
     key_aliases: Vec<(menu::KeyBind, MenuAction)>,
-    /// Configuration data that persists between application runs.
-    config: Config,
+    /// What is remembered between runs, and where, if it can be saved.
+    state: State,
+    state_handle: Option<cosmic_config::Config>,
     /// Search field in the header bar, shown with its button or Ctrl+F.
     search_id: widget::Id,
     search_active: bool,
@@ -61,7 +62,6 @@ pub struct AppModel {
 pub enum Message {
     LaunchUrl(String),
     ToggleContextPage(ContextPage),
-    UpdateConfig(Config),
     Map(MapEvent),
     TileReady(RenderedTile),
     PoiDetails(OsmId, Result<PoiDetails, services::Error>),
@@ -90,18 +90,13 @@ pub enum Arrow {
     Down,
 }
 
-/// Create a COSMIC application from the app model
 impl cosmic::Application for AppModel {
-    /// The async executor that will be used to run your application's commands.
     type Executor = cosmic::executor::Default;
 
-    /// Data that your application receives to its init method.
     type Flags = ();
 
-    /// Messages which the application and its widgets will emit.
     type Message = Message;
 
-    /// Unique identifier in RDNN (reverse domain name notation) format.
     const APP_ID: &'static str = "com.github.ercalvez.cosmic-maps";
 
     fn core(&self) -> &cosmic::Core {
@@ -112,7 +107,6 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
 
-    /// Initializes the application with any given flags and startup commands.
     fn init(
         mut core: cosmic::Core,
         _flags: Self::Flags,
@@ -121,7 +115,6 @@ impl cosmic::Application for AppModel {
         // overlay, it covers the whole map area and the map stops receiving clicks.
         core.window.context_is_overlay = false;
 
-        // Create the about widget
         let about = About::default()
             .name(fl!("app-title"))
             .icon(widget::icon::from_svg_bytes(APP_ICON))
@@ -129,27 +122,19 @@ impl cosmic::Application for AppModel {
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
 
-        let (map, tiles) = MapView::new(MapPalette::from_theme(cosmic::theme::active().cosmic()));
+        let (state_handle, state) = State::load(Self::APP_ID);
+        let start = state.map.map(|map| (map.latitude, map.longitude, map.zoom));
+        let palette = MapPalette::from_theme(cosmic::theme::active().cosmic());
+        let (map, tiles) = MapView::new(palette, start);
 
-        // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
             context_page: ContextPage::default(),
             about,
             key_binds: key_bind::key_binds(),
             key_aliases: key_bind::aliases(),
-            // Optional configuration file for an application.
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((errors, config)) => {
-                        for why in errors {
-                            tracing::error!(%why, "error loading app config");
-                        }
-                        config
-                    }
-                })
-                .unwrap_or_default(),
+            state,
+            state_handle,
             map,
             search_id: widget::Id::unique(),
             search_active: false,
@@ -165,6 +150,18 @@ impl cosmic::Application for AppModel {
         ]);
 
         (app, command)
+    }
+
+    /// The header bar's close button.
+    fn on_app_exit(&mut self) -> Option<Self::Message> {
+        self.save_state();
+        None
+    }
+
+    /// Closing the window another way, such as from the compositor.
+    fn on_close_requested(&self, _id: cosmic::iced::window::Id) -> Option<Self::Message> {
+        self.save_state();
+        None
     }
 
     /// Elements to pack at the start of the header bar.
@@ -243,7 +240,7 @@ impl cosmic::Application for AppModel {
         }
     }
 
-    /// Display a context drawer if the context page is requested.
+    /// The context drawer's page: About, the selected place, or the directions.
     fn context_drawer(&self) -> Option<context_drawer::ContextDrawer<'_, Self::Message>> {
         if !self.core.window.show_context {
             return None;
@@ -280,39 +277,19 @@ impl cosmic::Application for AppModel {
         })
     }
 
-    /// Describes the interface based on the current state of the application model.
-    ///
-    /// Application events will be processed through the view. Any messages emitted by
-    /// events received by widgets will be passed to the update method.
     fn view(&self) -> Element<'_, Self::Message> {
         // The map fills the window; search results drop down from the header.
         self.map.view(Message::Map)
     }
 
-    /// Register subscriptions for this application.
-    ///
-    /// Subscriptions are long-running async tasks running in the background which
-    /// emit messages to the application through a channel. They can be dynamically
-    /// stopped and started conditionally based on application state, or persist
-    /// indefinitely.
+    /// The user's position and the keys pressed.
     fn subscription(&self) -> Subscription<Self::Message> {
-        // Add subscriptions which are always active.
         let mut subscriptions = vec![
-            // Watch for application configuration changes.
-            self.core()
-                .watch_config::<Config>(Self::APP_ID)
-                .map(|update| {
-                    for why in update.errors {
-                        tracing::error!(?why, "app config error");
-                    }
-                    Message::UpdateConfig(update.config)
-                }),
+            // The user's position, for as long as the app runs.
+            Subscription::run_with(Self::APP_ID, |app_id| {
+                location::updates(app_id).map(Message::Location)
+            }),
         ];
-
-        // The user's position, for as long as the app runs.
-        subscriptions.push(Subscription::run_with(Self::APP_ID, |app_id| {
-            location::updates(app_id).map(Message::Location)
-        }));
 
         subscriptions.push(event::listen_with(|event, status, _window| {
             // Leave keys alone when a widget, such as a text input, used them.
@@ -335,10 +312,6 @@ impl cosmic::Application for AppModel {
         Subscription::batch(subscriptions)
     }
 
-    /// Handles messages emitted by the application and its widgets.
-    ///
-    /// Tasks may be returned for asynchronous execution of code in the background
-    /// on the application's async runtime.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::Map(event) => {
@@ -479,10 +452,6 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::UpdateConfig(config) => {
-                self.config = config;
-            }
-
             Message::LaunchUrl(url) => match open::that_detached(&url) {
                 Ok(()) => {}
                 Err(err) => {
@@ -607,6 +576,22 @@ impl AppModel {
         // A small gap, so the list does not touch the field.
         .padding([spacing.space_xxs, 0, 0, 0])
         .into()
+    }
+
+    /// Remembers where the map is looking, for the next run.
+    fn save_state(&self) {
+        let Some(handle) = &self.state_handle else {
+            return;
+        };
+        let (latitude, longitude) = self.map.center();
+        let map = MapPosition {
+            latitude,
+            longitude,
+            zoom: self.map.zoom(),
+        };
+        if let Err(err) = self.state.clone().set_map(handle, Some(map)) {
+            tracing::warn!("failed to save the app state: {err}");
+        }
     }
 
     /// Updates the header and window titles.

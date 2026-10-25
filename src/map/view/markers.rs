@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! What is drawn above the tiles: the selection, POI markers, routes and the
+//! user's position.
+
 use cosmic::iced::widget::canvas::{self, Frame, Geometry, Path};
 use cosmic::iced::{Color, Rectangle, Size, mouse};
 

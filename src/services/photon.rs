@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 //! Place search with Photon, which unlike Nominatim allows search-as-you-type.
 
 use std::sync::LazyLock;

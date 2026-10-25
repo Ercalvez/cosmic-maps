@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! The channel between the map view and the rendering worker.
+
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! The tiles, and the drags, wheel turns and clicks on them.
+
 use cosmic::iced::widget::canvas::{self, Action, Event, Frame, Geometry};
 use cosmic::iced::{Point, Rectangle, Size, Vector, mouse};
 

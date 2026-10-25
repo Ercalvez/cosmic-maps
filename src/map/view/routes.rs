@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Directions results drawn on the map.
+
 use cosmic::iced::widget::canvas::{self, Frame, Path};
 use cosmic::iced::{Color, Size};
 

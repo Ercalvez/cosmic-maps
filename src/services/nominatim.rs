@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+
 //! Extra POI information fetched from Nominatim.
 
 use std::collections::HashMap;

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! The map's camera, in Web Mercator coordinates: which tiles are visible and
+//! where places are on screen.
+
 use cosmic::iced::{Point, Size};
 
 /// Edge length of a rendered tile, in logical pixels.
