@@ -12,7 +12,7 @@ use crate::fl;
 
 use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon, world_position, zoom_showing};
 use super::location::Position;
-use super::details::{self, PoiDetails, Wheelchair};
+use super::details::{self, PoiDetails, Shape, Wheelchair};
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
 
@@ -238,8 +238,7 @@ impl MapView {
             request: self.next_lookup,
             lat,
             lon,
-            // Nominatim's detail levels roughly match map zoom levels.
-            zoom: self.camera.zoom().round().clamp(3.0, 18.0) as u8,
+            zoom: lookup_detail(self.camera.zoom()),
         }
     }
 
@@ -442,6 +441,15 @@ impl MapView {
         self.request_tiles();
     }
 
+    /// The outline or line of the selected place, once its details have arrived.
+    fn selected_shape(&self) -> Option<&Shape> {
+        let osm_id = self.selected.as_ref()?.osm_id?;
+        match self.details.get(&osm_id)? {
+            DetailsState::Loaded(details) => details.shape.as_ref(),
+            DetailsState::Loading | DetailsState::Unavailable => None,
+        }
+    }
+
     /// Whether a place is selected or being looked up, for the place panel.
     pub fn has_place(&self) -> bool {
         self.selected.is_some() || self.lookup.is_some()
@@ -463,6 +471,14 @@ impl MapView {
             (None, None) => None,
         }
     }
+}
+
+/// Nominatim detail level for a click at map `zoom`. Its levels are coarser than map
+/// zooms (16 and 17 are streets, 18 buildings), so they are shifted: buildings from
+/// map zoom 15, where they are clearly visible, down to counties around zoom 5.
+fn lookup_detail(zoom: f64) -> u8 {
+    const SHIFT: f64 = 3.0;
+    (zoom.round() + SHIFT).clamp(3.0, 18.0) as u8
 }
 
 /// The POI closest to `point` within `radius` pixels.
@@ -755,6 +771,12 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry<cosmic::Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
+        let accent = Color::from(theme.cosmic().accent_color());
+
+        // The selected place's extent, under everything else.
+        if let Some(shape) = self.map.selected_shape() {
+            draw_shape(&mut frame, &self.map.camera, shape, bounds.size(), accent);
+        }
 
         // The area the user is in, under the POI markers.
         let user = self.map.user.map(|user| {
@@ -806,7 +828,7 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
 
         if let Some(position) = self.map.selected_position() {
             let marker = Path::circle(position, MARKER_RADIUS);
-            frame.fill(&marker, Color::from(theme.cosmic().accent_color()));
+            frame.fill(&marker, accent);
             frame.stroke(
                 &marker,
                 canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
@@ -814,5 +836,51 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
         }
 
         vec![frame.into_geometry()]
+    }
+}
+
+/// Highlights a place: areas get a light fill and an outline, lines a thick stroke.
+fn draw_shape(frame: &mut Frame, camera: &Camera, shape: &Shape, viewport: Size, color: Color) {
+    let (Shape::Lines(parts) | Shape::Area(parts)) = shape;
+    let closed = matches!(shape, Shape::Area(_));
+
+    let path = Path::new(|builder| {
+        for part in parts {
+            let mut points = part.iter().map(|point| camera.to_screen(*point, viewport));
+            let Some(first) = points.next() else {
+                continue;
+            };
+            builder.move_to(first);
+            for point in points {
+                builder.line_to(point);
+            }
+            if closed {
+                builder.close();
+            }
+        }
+    });
+
+    if closed {
+        // Even-odd, so holes such as courtyards stay unfilled.
+        frame.fill(
+            &path,
+            canvas::Fill {
+                style: canvas::Style::Solid(Color { a: 0.2, ..color }),
+                rule: canvas::fill::Rule::EvenOdd,
+            },
+        );
+        frame.stroke(
+            &path,
+            canvas::Stroke::default().with_color(color).with_width(2.0),
+        );
+    } else {
+        frame.stroke(
+            &path,
+            canvas::Stroke::default()
+                .with_color(Color { a: 0.7, ..color })
+                .with_width(6.0)
+                .with_line_cap(canvas::LineCap::Round)
+                .with_line_join(canvas::LineJoin::Round),
+        );
     }
 }

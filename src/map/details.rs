@@ -18,10 +18,13 @@ const REVERSE_URL: &str = "https://nominatim.openstreetmap.org/reverse";
 static NOMINATIM: RateLimit = RateLimit::new(Duration::from_secs(1));
 /// Languages for addresses, such as "fr,en".
 static LANGUAGES: LazyLock<String> = LazyLock::new(|| system_languages().join(","));
+/// Simplification of the shapes Nominatim returns, in degrees (about 5 m): keeps
+/// buildings recognizable while making city outlines several times lighter.
+const SHAPE_SIMPLIFICATION: &str = "0.00005";
 /// Countries writing the house number before the street, such as "10 Rue Malakoff".
 const NUMBER_FIRST_COUNTRIES: [&str; 9] = ["au", "ca", "fr", "gb", "ie", "lu", "nz", "us", "za"];
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PoiDetails {
     /// Street and city, such as "Schillingstraße 12, 10179 Berlin".
     pub address: Option<String>,
@@ -30,6 +33,17 @@ pub struct PoiDetails {
     pub website: Option<String>,
     pub phone: Option<String>,
     pub wheelchair: Option<Wheelchair>,
+    /// The place's outline or line, to highlight it on the map.
+    pub shape: Option<Shape>,
+}
+
+/// The extent of a place, in Web Mercator coordinates spanning 0..1.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Shape {
+    /// Streets and rivers: one or more lines.
+    Lines(Vec<Vec<(f64, f64)>>),
+    /// Buildings and areas: the rings of one or more polygons, holes included.
+    Area(Vec<Vec<(f64, f64)>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +68,8 @@ pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
             ("format", "jsonv2"),
             ("addressdetails", "1"),
             ("extratags", "1"),
+            ("polygon_geojson", "1"),
+            ("polygon_threshold", SHAPE_SIMPLIFICATION),
             ("accept-language", LANGUAGES.as_str()),
         ])
         .send()
@@ -85,6 +101,8 @@ pub async fn reverse(lat: f64, lon: f64, zoom: u8) -> Result<Option<(Poi, PoiDet
             ("format", "jsonv2"),
             ("addressdetails", "1"),
             ("extratags", "1"),
+            ("polygon_geojson", "1"),
+            ("polygon_threshold", SHAPE_SIMPLIFICATION),
             ("accept-language", LANGUAGES.as_str()),
         ])
         .send()
@@ -127,6 +145,50 @@ struct Place {
     address: Address,
     #[serde(default)]
     extratags: Option<HashMap<String, String>>,
+    #[serde(default)]
+    geojson: Option<Geometry>,
+}
+
+/// A GeoJSON geometry, with coordinates as longitude then latitude.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Geometry {
+    Known(KnownGeometry),
+    /// Points have no extent, and geometry collections are rare.
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", content = "coordinates")]
+enum KnownGeometry {
+    LineString(Vec<[f64; 2]>),
+    MultiLineString(Vec<Vec<[f64; 2]>>),
+    Polygon(Vec<Vec<[f64; 2]>>),
+    MultiPolygon(Vec<Vec<Vec<[f64; 2]>>>),
+}
+
+impl Geometry {
+    fn into_shape(self) -> Option<Shape> {
+        let to_world = |line: Vec<[f64; 2]>| -> Vec<(f64, f64)> {
+            line.into_iter()
+                .map(|[lon, lat]| world_position(lat, lon))
+                .collect()
+        };
+
+        let Geometry::Known(geometry) = self else {
+            return None;
+        };
+        Some(match geometry {
+            KnownGeometry::LineString(line) => Shape::Lines(vec![to_world(line)]),
+            KnownGeometry::MultiLineString(lines) => {
+                Shape::Lines(lines.into_iter().map(to_world).collect())
+            }
+            KnownGeometry::Polygon(rings) => Shape::Area(rings.into_iter().map(to_world).collect()),
+            KnownGeometry::MultiPolygon(polygons) => {
+                Shape::Area(polygons.into_iter().flatten().map(to_world).collect())
+            }
+        })
+    }
 }
 
 impl Place {
@@ -215,6 +277,7 @@ impl From<Place> for PoiDetails {
         let mut tag = |keys: &[&str]| keys.iter().find_map(|key| tags.remove(*key));
 
         Self {
+            shape: place.geojson.and_then(Geometry::into_shape),
             address: place.address.format(),
             opening_hours: tag(&["opening_hours"]),
             website: tag(&["website", "contact:website"]),
@@ -267,6 +330,7 @@ mod tests {
                 website: Some("https://example.org".to_owned()),
                 phone: None,
                 wheelchair: Some(Wheelchair::No),
+                shape: None,
             }
         );
     }
@@ -311,6 +375,32 @@ mod tests {
         assert_eq!(poi.osm_id, Some(OsmId::Node(1693005227)));
         assert_eq!(poi.subclass.as_deref(), Some("house"));
         assert_eq!(details.address.as_deref(), Some("10 Rue Malakoff, 29200 Brest"));
+    }
+
+    #[test]
+    fn parses_shapes() {
+        let shape = |geojson: &str| {
+            let json = format!(r#"[{{"geojson": {geojson}}}]"#);
+            let place = serde_json::from_str::<Vec<Place>>(&json).unwrap().remove(0);
+            PoiDetails::from(place).shape
+        };
+
+        let Some(Shape::Area(rings)) =
+            shape(r#"{"type": "Polygon", "coordinates": [[[0, 0], [90, 0], [0, 45], [0, 0]]]}"#)
+        else {
+            panic!("expected an area");
+        };
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0][0], (0.5, 0.5));
+        assert_eq!(rings[0][1], (0.75, 0.5));
+
+        assert!(matches!(
+            shape(r#"{"type": "LineString", "coordinates": [[13.41, 52.52], [13.42, 52.52]]}"#),
+            Some(Shape::Lines(lines)) if lines.len() == 1
+        ));
+        // Points have no extent, and an unknown geometry does not break parsing.
+        assert_eq!(shape(r#"{"type": "Point", "coordinates": [13.41, 52.52]}"#), None);
+        assert_eq!(shape(r#"{"type": "GeometryCollection", "geometries": []}"#), None);
     }
 
     #[test]
