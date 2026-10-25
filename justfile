@@ -60,6 +60,11 @@ check-json: (check '--message-format=json')
 run *args:
     env RUST_BACKTRACE=full cargo run --release --locked {{args}}
 
+# Watches for changes and runs the application for testing purposes
+watch *args:
+    env RUST_BACKTRACE=full cargo watch -x "run --release --locked -- {{args}}"
+
+
 # Installs files
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
