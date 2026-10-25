@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
 use cosmic::iced::futures::channel::mpsc::{self, UnboundedReceiver};
 use cosmic::iced::widget::image::Handle;
 
 use super::camera::TileId;
+use super::poi::Poi;
 
 pub struct MapState {
     renderer_tx: Sender<MapCommand>,
@@ -14,6 +16,8 @@ pub struct MapState {
 pub struct RenderedTile {
     pub tile: TileId,
     pub image: Option<Handle>,
+    /// Named POIs in the tile. Shared, so cloning the message stays cheap.
+    pub pois: Arc<[Poi]>,
 }
 
 pub enum MapCommand {

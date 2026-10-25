@@ -59,6 +59,19 @@ impl Camera {
         self.zoom
     }
 
+    /// Viewport position of a point in Web Mercator coordinates spanning 0..1.
+    pub fn to_screen(&self, position: (f64, f64), viewport: Size) -> Point {
+        let world = world_size(self.zoom);
+        // The world repeats horizontally: use the copy closest to the center.
+        let dx = (position.0 * world - self.center.0 + world / 2.0).rem_euclid(world) - world / 2.0;
+        let dy = position.1 * world - self.center.1;
+
+        Point::new(
+            viewport.width / 2.0 + dx as f32,
+            viewport.height / 2.0 + dy as f32,
+        )
+    }
+
     /// Moves the map content by `(dx, dy)` screen pixels.
     pub fn pan(&mut self, dx: f64, dy: f64) {
         let world = world_size(self.zoom);
