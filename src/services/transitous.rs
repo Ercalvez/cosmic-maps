@@ -76,14 +76,45 @@ impl Plan {
     }
 }
 
+/// Real-time estimates earlier than the schedule by more than this, in seconds,
+/// are taken for errors in the feed: vehicles do not run an hour early.
+const MAX_EARLY: i64 = 300;
+
+/// A time as estimated with real-time data, and as scheduled. Both are the same
+/// without real-time data.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Planned {
+    pub estimated: Timestamp,
+    pub scheduled: Timestamp,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Itinerary {
-    /// In seconds.
+    /// Estimated, in seconds.
     pub duration: u64,
     pub start_time: Timestamp,
     pub end_time: Timestamp,
+    /// Of the first and last legs, which MOTIS gives no itinerary times for.
+    pub scheduled_start: Timestamp,
+    pub scheduled_end: Timestamp,
     pub transfers: u32,
     pub legs: Vec<Leg>,
+}
+
+impl Itinerary {
+    pub fn start(&self) -> Planned {
+        Planned { estimated: self.start_time, scheduled: self.scheduled_start }
+    }
+
+    pub fn end(&self) -> Planned {
+        Planned { estimated: self.end_time, scheduled: self.scheduled_end }
+    }
+
+    /// The duration as estimated and as scheduled, in seconds.
+    pub fn durations(&self) -> (u64, u64) {
+        let scheduled = self.scheduled_end.as_second() - self.scheduled_start.as_second();
+        (self.duration, u64::try_from(scheduled).unwrap_or_default())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +125,8 @@ pub struct Leg {
     pub to: Stop,
     pub start_time: Timestamp,
     pub end_time: Timestamp,
+    pub scheduled_start: Timestamp,
+    pub scheduled_end: Timestamp,
     /// In seconds.
     pub duration: u64,
     /// In meters, for street legs.
@@ -111,6 +144,14 @@ pub struct Leg {
 impl Leg {
     pub fn is_walk(&self) -> bool {
         self.mode == "WALK"
+    }
+
+    pub fn start(&self) -> Planned {
+        Planned { estimated: self.start_time, scheduled: self.scheduled_start }
+    }
+
+    pub fn end(&self) -> Planned {
+        Planned { estimated: self.end_time, scheduled: self.scheduled_end }
     }
 
     /// On a public transit line, rather than walking, cycling or driving.
@@ -132,6 +173,7 @@ pub struct Stop {
 pub struct PassedStop {
     pub name: String,
     pub arrival: Option<Timestamp>,
+    pub scheduled_arrival: Option<Timestamp>,
     /// Web Mercator coordinates spanning 0..1.
     pub position: (f64, f64),
 }
@@ -242,6 +284,8 @@ struct RawLeg {
     to: RawPlace,
     start_time: Timestamp,
     end_time: Timestamp,
+    scheduled_start_time: Option<Timestamp>,
+    scheduled_end_time: Option<Timestamp>,
     duration: u64,
     distance: Option<f64>,
     route_short_name: Option<String>,
@@ -257,9 +301,11 @@ struct RawLeg {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawStop {
     name: String,
     arrival: Option<Timestamp>,
+    scheduled_arrival: Option<Timestamp>,
     lat: f64,
     lon: f64,
 }
@@ -303,12 +349,46 @@ impl Response {
 
 impl RawItinerary {
     fn into_itinerary(self) -> Itinerary {
-        Itinerary {
+        let legs: Vec<Leg> = self.legs.into_iter().map(RawLeg::into_leg).collect();
+        let scheduled_start = legs.first().map_or(self.start_time, |leg| leg.scheduled_start);
+        let scheduled_end = legs.last().map_or(self.end_time, |leg| leg.scheduled_end);
+
+        let mut itinerary = Itinerary {
             duration: self.duration,
             start_time: self.start_time,
             end_time: self.end_time,
+            scheduled_start,
+            scheduled_end,
             transfers: self.transfers,
-            legs: self.legs.into_iter().map(RawLeg::into_leg).collect(),
+            legs,
+        };
+        if itinerary.has_implausible_estimates() {
+            itinerary.use_schedule();
+        }
+        itinerary
+    }
+}
+
+impl Itinerary {
+    /// Some leg is estimated to run much earlier than scheduled.
+    fn has_implausible_estimates(&self) -> bool {
+        let too_early = |planned: Planned| {
+            planned.scheduled.as_second() - planned.estimated.as_second() > MAX_EARLY
+        };
+        self.legs.iter().any(|leg| too_early(leg.start()) || too_early(leg.end()))
+    }
+
+    /// Drops all the real-time estimates, so the times shown stay consistent.
+    fn use_schedule(&mut self) {
+        self.start_time = self.scheduled_start;
+        self.end_time = self.scheduled_end;
+        self.duration = self.durations().1;
+        for leg in &mut self.legs {
+            leg.start_time = leg.scheduled_start;
+            leg.end_time = leg.scheduled_end;
+            for stop in &mut leg.stops {
+                stop.arrival = stop.scheduled_arrival.or(stop.arrival);
+            }
         }
     }
 }
@@ -329,6 +409,8 @@ impl RawLeg {
             to: self.to.into_stop(),
             start_time: self.start_time,
             end_time: self.end_time,
+            scheduled_start: self.scheduled_start_time.unwrap_or(self.start_time),
+            scheduled_end: self.scheduled_end_time.unwrap_or(self.end_time),
             duration: self.duration,
             distance: self.distance,
             line,
@@ -338,6 +420,7 @@ impl RawLeg {
                 .map(|stop| PassedStop {
                     name: stop.name,
                     arrival: stop.arrival,
+                    scheduled_arrival: stop.scheduled_arrival,
                     position: world_position(stop.lat, stop.lon),
                 })
                 .collect(),
@@ -501,6 +584,117 @@ mod tests {
             Some("2026-10-25T15:02:00Z".parse::<Timestamp>().unwrap())
         );
         assert!(metro.steps.is_empty());
+    }
+
+    /// A walk to Louvre - Rivoli and a Metro 1 ride to Hôtel de Ville, Paris, scheduled
+    /// from 14:56 to 15:03 with the ride leaving at 15:01. The ride is estimated `late`
+    /// seconds after its schedule (before it if negative).
+    fn metro_trip(late: i64) -> Itinerary {
+        let time = |seconds: i64| {
+            let scheduled: Timestamp = "2026-10-25T15:01:00Z".parse().unwrap();
+            Timestamp::from_second(scheduled.as_second() + seconds).unwrap().to_string()
+        };
+        let json = format!(
+            r#"{{
+            "duration": {duration}, "startTime": "2026-10-25T14:56:00Z", "endTime": "{end}",
+            "transfers": 0,
+            "legs": [
+                {{
+                    "mode": "WALK", "duration": 300, "distance": 380.0,
+                    "startTime": "2026-10-25T14:56:00Z", "endTime": "{start}",
+                    "scheduledStartTime": "2026-10-25T14:56:00Z",
+                    "scheduledEndTime": "2026-10-25T15:01:00Z",
+                    "from": {{"name": "START", "lat": 48.8606, "lon": 2.3376}},
+                    "to": {{"name": "Louvre - Rivoli", "lat": 48.861073, "lon": 2.3401628}}
+                }},
+                {{
+                    "mode": "SUBWAY", "duration": 120, "realTime": true,
+                    "startTime": "{start}", "endTime": "{end}",
+                    "scheduledStartTime": "2026-10-25T15:01:00Z",
+                    "scheduledEndTime": "2026-10-25T15:03:00Z",
+                    "from": {{"name": "Louvre - Rivoli", "lat": 48.861073, "lon": 2.3401628}},
+                    "to": {{"name": "Hôtel de Ville", "lat": 48.857105, "lon": 2.3529568}},
+                    "routeShortName": "1",
+                    "intermediateStops": [{{
+                        "name": "Châtelet", "lat": 48.858, "lon": 2.347,
+                        "arrival": "{stop}", "scheduledArrival": "2026-10-25T15:02:00Z"
+                    }}]
+                }}
+            ]
+        }}"#,
+            duration = (420 + late).max(0),
+            start = time(late),
+            end = time(late + 120),
+            stop = time(late + 60),
+        );
+        serde_json::from_str::<RawItinerary>(&json).unwrap().into_itinerary()
+    }
+
+    fn parse(time: &str) -> Timestamp {
+        time.parse().unwrap()
+    }
+
+    #[test]
+    fn real_time_estimates_are_kept_beside_the_schedule() {
+        // Four minutes late.
+        let trip = metro_trip(240);
+
+        assert_eq!(trip.start().estimated, parse("2026-10-25T14:56:00Z"));
+        assert_eq!(trip.start().scheduled, parse("2026-10-25T14:56:00Z"));
+        assert_eq!(trip.end().estimated, parse("2026-10-25T15:07:00Z"));
+        assert_eq!(trip.end().scheduled, parse("2026-10-25T15:03:00Z"));
+        // Seven minutes scheduled, four more estimated.
+        assert_eq!(trip.durations(), (660, 420));
+
+        let metro = &trip.legs[1];
+        assert_eq!(metro.start().estimated, parse("2026-10-25T15:05:00Z"));
+        assert_eq!(metro.start().scheduled, parse("2026-10-25T15:01:00Z"));
+        assert_eq!(metro.stops[0].arrival, Some(parse("2026-10-25T15:06:00Z")));
+        assert_eq!(metro.stops[0].scheduled_arrival, Some(parse("2026-10-25T15:02:00Z")));
+    }
+
+    #[test]
+    fn the_schedule_alone_when_there_is_no_real_time_data() {
+        // Older fixtures have no scheduled times: they default to the estimates.
+        let plan: Plan = serde_json::from_str::<Response>(
+            r#"{"direct": [{"duration": 60, "startTime": "2026-10-25T15:01:00Z",
+                "endTime": "2026-10-25T15:02:00Z", "legs": [{
+                "mode": "WALK", "duration": 60, "startTime": "2026-10-25T15:01:00Z",
+                "endTime": "2026-10-25T15:02:00Z",
+                "from": {"name": "START", "lat": 48.8606, "lon": 2.3376},
+                "to": {"name": "END", "lat": 48.8564, "lon": 2.3524}}]}]}"#,
+        )
+        .unwrap()
+        .into_plan();
+
+        let walk = plan.direct.unwrap();
+        assert_eq!(walk.start().estimated, walk.start().scheduled);
+        assert_eq!(walk.durations(), (60, 60));
+    }
+
+    #[test]
+    fn early_estimates_are_kept_within_five_minutes_and_late_ones_always() {
+        // Three minutes early.
+        assert_eq!(metro_trip(-180).legs[1].start().estimated, parse("2026-10-25T14:58:00Z"));
+        // Half an hour late.
+        let late = metro_trip(1800);
+        assert_eq!(late.legs[1].start().estimated, parse("2026-10-25T15:31:00Z"));
+        assert_eq!(late.durations(), (2220, 420));
+    }
+
+    #[test]
+    fn implausibly_early_estimates_fall_back_to_the_schedule() {
+        // An hour early, as one Metro 1 trip was from Transitous.
+        let trip = metro_trip(-3660);
+
+        assert_eq!(trip.start_time, parse("2026-10-25T14:56:00Z"));
+        assert_eq!(trip.end_time, parse("2026-10-25T15:03:00Z"));
+        assert_eq!(trip.durations(), (420, 420));
+        for leg in &trip.legs {
+            assert_eq!(leg.start_time, leg.scheduled_start);
+            assert_eq!(leg.end_time, leg.scheduled_end);
+        }
+        assert_eq!(trip.legs[1].stops[0].arrival, Some(parse("2026-10-25T15:02:00Z")));
     }
 
     #[test]

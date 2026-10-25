@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use cosmic::iced::widget::{rich_text, span};
 use cosmic::iced::{Alignment, Background, Border, Color, Length};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
@@ -13,7 +14,7 @@ use jiff::tz::TimeZone;
 
 use crate::directions::Message;
 use crate::fl;
-use crate::services::transitous::{Itinerary, Leg, Plan, RouteMode, Step};
+use crate::services::transitous::{Itinerary, Leg, Plan, Planned, RouteMode, Step};
 
 const TRANSITOUS_SOURCES: &str = "https://transitous.org/sources/";
 const OSM_COPYRIGHT: &str = "https://www.openstreetmap.org/copyright";
@@ -123,11 +124,15 @@ fn walk_option<'a>(walk: &Itinerary) -> Element<'a, Message> {
 
 /// Departure → arrival and duration, then the lines taken and the transfers.
 fn transit_option<'a>(itinerary: &'a Itinerary) -> Element<'a, Message> {
-    let times = format!(
-        "{} → {}",
-        format_time(itinerary.start_time),
-        format_time(itinerary.end_time)
-    );
+    let (estimated, scheduled) = itinerary.durations();
+    let heading = widget::row::with_capacity(5)
+        .push(time_view(itinerary.start(), TextStyle::Heading))
+        .push(widget::text::heading("→"))
+        .push(time_view(itinerary.end(), TextStyle::Heading))
+        .push(widget::space::horizontal())
+        .push(duration_view(estimated, scheduled, TextStyle::Body))
+        .spacing(cosmic::theme::spacing().space_xxs)
+        .align_y(Alignment::Center);
 
     let mut lines = widget::row::with_capacity(2 * itinerary.legs.len())
         .spacing(cosmic::theme::spacing().space_xxs)
@@ -143,7 +148,7 @@ fn transit_option<'a>(itinerary: &'a Itinerary) -> Element<'a, Message> {
         .push(widget::text::caption(fl!("route-transfers", count = itinerary.transfers)));
 
     widget::column::with_capacity(2)
-        .push(heading_row(times, format_duration(itinerary.duration)))
+        .push(heading)
         .push(lines)
         .spacing(cosmic::theme::spacing().space_xxs)
         .into()
@@ -211,15 +216,110 @@ fn leg_view<'a>(
 
     let from = stop_name(&leg.from.name, ends);
     let to = stop_name(&leg.to.name, ends);
-    let board = fl!("route-leg-board", stop = from, time = at(leg.start_time));
-    let alight = fl!("route-leg-alight", stop = to, time = at(leg.end_time));
+    let board = fl!("route-leg-board", stop = from);
+    let alight = fl!("route-leg-alight", stop = to);
 
     widget::column::with_capacity(4)
         .push(line)
-        .push(widget::text::caption(board))
+        .push(stop_time_view(board, leg.start()))
         .push(stops_view(leg, index, stops_open))
-        .push(widget::text::caption(alight))
+        .push(stop_time_view(alight, leg.end()))
         .spacing(2)
+        .into()
+}
+
+/// "Board at Louvre - Rivoli · 21:47", with the schedule beside a late time.
+fn stop_time_view<'a>(label: String, planned: Planned) -> Element<'a, Message> {
+    widget::row::with_capacity(3)
+        .push(widget::text::caption(label))
+        .push(widget::text::caption("·"))
+        .push(time_view(planned, TextStyle::Caption))
+        .spacing(cosmic::theme::spacing().space_xxs)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// How a time or duration estimated with real-time data compares to its schedule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Deviation {
+    Same,
+    Late,
+    Early,
+}
+
+impl Deviation {
+    /// Of two values in minutes, as shown.
+    fn of_minutes(estimated: i64, scheduled: i64) -> Self {
+        match estimated.cmp(&scheduled) {
+            std::cmp::Ordering::Equal => Self::Same,
+            std::cmp::Ordering::Greater => Self::Late,
+            std::cmp::Ordering::Less => Self::Early,
+        }
+    }
+
+    fn of_times(planned: Planned) -> Self {
+        let minutes = |time: Timestamp| time.as_second().div_euclid(60);
+        Self::of_minutes(minutes(planned.estimated), minutes(planned.scheduled))
+    }
+}
+
+/// The kind of text a time is shown in.
+#[derive(Debug, Clone, Copy)]
+enum TextStyle {
+    Heading,
+    Body,
+    Caption,
+}
+
+/// A time as estimated: alone when on schedule, else in a warning colour with the
+/// scheduled time struck through beside it.
+fn time_view<'a>(planned: Planned, style: TextStyle) -> Element<'a, Message> {
+    let deviation = Deviation::of_times(planned);
+    versus_schedule(
+        format_time(planned.estimated),
+        format_time(planned.scheduled),
+        deviation,
+        style,
+    )
+}
+
+/// A duration as estimated, in the same way, in seconds.
+fn duration_view<'a>(estimated: u64, scheduled: u64, style: TextStyle) -> Element<'a, Message> {
+    let minutes = |seconds: u64| i64::try_from(seconds.div_ceil(60)).unwrap_or(i64::MAX);
+    versus_schedule(
+        format_duration(estimated),
+        format_duration(scheduled),
+        Deviation::of_minutes(minutes(estimated), minutes(scheduled)),
+        style,
+    )
+}
+
+fn versus_schedule<'a>(
+    estimated: String,
+    scheduled: String,
+    deviation: Deviation,
+    style: TextStyle,
+) -> Element<'a, Message> {
+    let (size, line_height, font) = match style {
+        TextStyle::Heading => (14.0, 21.0, cosmic::font::bold()),
+        TextStyle::Body => (14.0, 21.0, cosmic::font::default()),
+        TextStyle::Caption => (12.0, 17.0, cosmic::font::default()),
+    };
+    let cosmic = cosmic::theme::active();
+    let color = match deviation {
+        Deviation::Same => None,
+        Deviation::Late => Some(Color::from(cosmic.cosmic().warning_color())),
+        Deviation::Early => Some(Color::from(cosmic.cosmic().success_color())),
+    };
+
+    let mut spans = vec![span::<(), _>(estimated).font(font).color_maybe(color)];
+    if deviation != Deviation::Same {
+        spans.push(span("  ").font(font));
+        spans.push(span(scheduled).font(cosmic::font::default()).strikethrough(true));
+    }
+    rich_text(spans)
+        .size(size)
+        .line_height(cosmic::iced::widget::text::LineHeight::Absolute(line_height.into()))
         .into()
 }
 
@@ -458,6 +558,26 @@ mod tests {
         assert_eq!(format_distance(1358.0), fl!("route-kilometers", kilometers = "1.4"));
         // Paris → Lyon by car.
         assert_eq!(format_distance(465_696.0), fl!("route-kilometers", kilometers = "466"));
+    }
+
+    #[test]
+    fn deviations_follow_the_minutes_shown() {
+        let planned = |estimated: &str, scheduled: &str| Planned {
+            estimated: estimated.parse().unwrap(),
+            scheduled: scheduled.parse().unwrap(),
+        };
+
+        let on_time = planned("2026-10-25T15:01:00Z", "2026-10-25T15:01:00Z");
+        assert_eq!(Deviation::of_times(on_time), Deviation::Same);
+        // Seconds are not shown.
+        let seconds = planned("2026-10-25T15:01:40Z", "2026-10-25T15:01:00Z");
+        assert_eq!(Deviation::of_times(seconds), Deviation::Same);
+        let late = planned("2026-10-25T15:05:00Z", "2026-10-25T15:01:00Z");
+        assert_eq!(Deviation::of_times(late), Deviation::Late);
+        let early = planned("2026-10-25T14:59:00Z", "2026-10-25T15:01:00Z");
+        assert_eq!(Deviation::of_times(early), Deviation::Early);
+
+        assert_eq!(Deviation::of_minutes(17, 15), Deviation::Late);
     }
 
     #[test]

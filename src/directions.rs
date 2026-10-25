@@ -684,6 +684,8 @@ mod tests {
             duration: 600,
             start_time: jiff::Timestamp::UNIX_EPOCH,
             end_time: jiff::Timestamp::UNIX_EPOCH,
+            scheduled_start: jiff::Timestamp::UNIX_EPOCH,
+            scheduled_end: jiff::Timestamp::UNIX_EPOCH,
             transfers: 0,
             legs: Vec::new(),
         }
