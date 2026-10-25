@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::fl;
 use crate::map::details::{self, PoiDetails};
+use crate::map::location::{self, Position};
 use crate::map::poi::{OsmId, Poi};
 use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
@@ -62,6 +63,8 @@ pub enum Message {
     Map(MapEvent),
     TileReady(RenderedTile),
     PoiDetails(OsmId, Result<PoiDetails, details::Error>),
+    /// The user's position, or why it cannot be known.
+    Location(Result<Position, String>),
     /// What a click that hit no POI found, for the lookup with this number.
     Reverse(u64, Result<Option<(Poi, PoiDetails)>, details::Error>),
     SearchActivate,
@@ -95,7 +98,7 @@ impl cosmic::Application for AppModel {
     type Message = Message;
 
     /// Unique identifier in RDNN (reverse domain name notation) format.
-    const APP_ID: &'static str = "dev.mmurphy.Test";
+    const APP_ID: &'static str = "com.github.ercalvez.cosmic-maps";
 
     fn core(&self) -> &cosmic::Core {
         &self.core
@@ -263,6 +266,11 @@ impl cosmic::Application for AppModel {
                 }),
         ];
 
+        // The user's position, for as long as the app runs.
+        subscriptions.push(Subscription::run_with(Self::APP_ID, |app_id| {
+            location::updates(app_id).map(Message::Location)
+        }));
+
         subscriptions.push(event::listen_with(|event, status, _window| {
             // Leave keys alone when a widget, such as a text input, used them.
             if status == event::Status::Captured {
@@ -412,6 +420,14 @@ impl cosmic::Application for AppModel {
 
             Message::PoiDetails(osm_id, result) => {
                 self.map.insert_details(osm_id, result);
+            }
+
+            Message::Location(Ok(position)) => {
+                self.map.set_position(position);
+            }
+
+            Message::Location(Err(err)) => {
+                eprintln!("location unavailable: {err}");
             }
 
             Message::Reverse(request, result) => {

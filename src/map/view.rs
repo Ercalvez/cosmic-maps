@@ -10,7 +10,8 @@ use cosmic::widget::{self, icon};
 
 use crate::fl;
 
-use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon};
+use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon, world_position, zoom_showing};
+use super::location::Position;
 use super::details::{self, PoiDetails, Wheelchair};
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
@@ -37,6 +38,14 @@ const POI_HIT_RADIUS: f32 = 10.0;
 /// The same for POIs without a marker, which have to be aimed at more precisely.
 const HIDDEN_POI_HIT_RADIUS: f32 = 6.0;
 const MARKER_RADIUS: f32 = 6.0;
+/// Most zoomed in the map gets when showing the user's position.
+const LOCATED_MAX_ZOOM: f64 = 16.0;
+/// Viewport span assumed before the map knows its size.
+const DEFAULT_SPAN: f32 = 800.0;
+const USER_DOT_RADIUS: f32 = 7.0;
+/// "You are here" blue, as in GNOME Maps.
+const USER_COLOR: Color = Color::from_rgb(0.21, 0.52, 0.89);
+
 /// Zoom used to show a place picked from search, high enough for POI markers.
 const PLACE_ZOOM: f64 = 16.0;
 
@@ -57,6 +66,8 @@ pub enum MapEvent {
     /// A click without dragging, at this position in the map.
     Click(Point),
     ClosePanel,
+    /// Center the map on the user's position.
+    Locate,
     /// A link in the place panel, such as a website or a `tel:` URI.
     OpenUrl(String),
 }
@@ -109,6 +120,11 @@ pub struct MapView {
     details: HashMap<OsmId, DetailsState>,
     /// Last request sent to the worker, to avoid resending it on every pan.
     wanted: Vec<TileId>,
+    /// Where the user is, once known.
+    user: Option<Position>,
+    /// The view was chosen, by the user or by centering on their position, so a
+    /// new position must not move it.
+    view_chosen: bool,
 }
 
 impl MapView {
@@ -129,6 +145,8 @@ impl MapView {
             next_lookup: 0,
             details: HashMap::new(),
             wanted: Vec::new(),
+            user: None,
+            view_chosen: false,
         };
 
         (map, tiles)
@@ -138,8 +156,12 @@ impl MapView {
         let mut action = None;
 
         match event {
-            MapEvent::Pan { dx, dy } => self.camera.pan(dx, dy),
+            MapEvent::Pan { dx, dy } => {
+                self.view_chosen = true;
+                self.camera.pan(dx, dy);
+            }
             MapEvent::Zoom { delta, anchor } => {
+                self.view_chosen = true;
                 let anchor = anchor.unwrap_or(Point::new(self.viewport.width / 2.0, self.viewport.height / 2.0));
                 self.camera.zoom_at(delta, anchor, self.viewport);
             }
@@ -155,6 +177,7 @@ impl MapView {
                 }
             }
             MapEvent::ClosePanel => self.close_panel(),
+            MapEvent::Locate => self.center_on_user(),
             MapEvent::OpenUrl(url) => action = Some(MapAction::OpenUrl(url)),
         }
 
@@ -165,6 +188,7 @@ impl MapView {
     /// Centers the map on `poi` and shows it in the place panel, such as for a search
     /// result.
     pub fn show_place(&mut self, poi: Poi) -> Option<MapAction> {
+        self.view_chosen = true;
         self.camera = Camera::centered_on(poi.position, PLACE_ZOOM);
         self.lookup = None;
         self.selected = Some(poi);
@@ -353,18 +377,30 @@ impl MapView {
         let zoom_out = widget::button::icon(icon::from_name("zoom-out-symbolic"))
             .on_press_maybe((self.camera.zoom() > MIN_ZOOM).then(|| zoom(-ZOOM_PER_CLICK)));
 
-        let controls = widget::container(
+        let zoom_buttons = widget::container(
             widget::column::with_capacity(2)
                 .push(zoom_in)
                 .push(zoom_out)
                 .spacing(spacing.space_xxxs),
         )
         .padding(spacing.space_xxxs)
-        .class(cosmic::theme::Container::Card)
-        .apply(widget::container)
-        .padding(spacing.space_s)
-        .align_right(Length::Fill)
-        .align_top(Length::Fill);
+        .class(cosmic::theme::Container::Card);
+
+        // Disabled until the user's position is known.
+        let locate = widget::button::icon(icon::from_name("find-location-symbolic"))
+            .on_press_maybe(self.user.is_some().then(|| on_event(MapEvent::Locate)));
+        let locate = widget::container(locate)
+            .padding(spacing.space_xxxs)
+            .class(cosmic::theme::Container::Card);
+
+        let controls = widget::column::with_capacity(2)
+            .push(zoom_buttons)
+            .push(locate)
+            .spacing(spacing.space_xs)
+            .apply(widget::container)
+            .padding(spacing.space_s)
+            .align_right(Length::Fill)
+            .align_top(Length::Fill);
 
         let map = widget::canvas(MapCanvas {
             map: self,
@@ -379,6 +415,31 @@ impl MapView {
             .height(Length::Fill);
 
         cosmic::iced::widget::stack![map, markers, controls].into()
+    }
+
+    /// Records where the user is. The first time, the map centers there, unless
+    /// the user already moved it while waiting.
+    pub fn set_position(&mut self, position: Position) {
+        self.user = Some(position);
+        if !self.view_chosen {
+            self.center_on_user();
+        }
+    }
+
+    /// Centers the map on the user, zoomed so the area they are in fits.
+    fn center_on_user(&mut self) {
+        let Some(user) = self.user else {
+            return;
+        };
+        let span = match self.viewport.width.min(self.viewport.height) {
+            span if span > 0.0 => span,
+            _ => DEFAULT_SPAN,
+        };
+        let zoom = zoom_showing(user.accuracy, user.latitude, span).min(LOCATED_MAX_ZOOM);
+
+        self.view_chosen = true;
+        self.camera = Camera::centered_on(world_position(user.latitude, user.longitude), zoom);
+        self.request_tiles();
     }
 
     /// Whether a place is selected or being looked up, for the place panel.
@@ -695,6 +756,30 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
     ) -> Vec<Geometry<cosmic::Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
 
+        // The area the user is in, under the POI markers.
+        let user = self.map.user.map(|user| {
+            let center = self
+                .map
+                .camera
+                .to_screen(world_position(user.latitude, user.longitude), bounds.size());
+            let radius = (user.accuracy / self.map.camera.meters_per_pixel(user.latitude)) as f32;
+            (center, radius)
+        });
+        if let Some((center, radius)) = user {
+            // Skip it when it is hidden by the dot, or when it covers the whole view.
+            let diagonal = bounds.width.hypot(bounds.height);
+            if radius > USER_DOT_RADIUS && radius < 4.0 * diagonal {
+                let area = Path::circle(center, radius);
+                frame.fill(&area, Color { a: 0.15, ..USER_COLOR });
+                frame.stroke(
+                    &area,
+                    canvas::Stroke::default()
+                        .with_color(Color { a: 0.5, ..USER_COLOR })
+                        .with_width(1.0),
+                );
+            }
+        }
+
         // One path for all markers: there can be hundreds.
         let pois = self.map.drawn_pois(bounds.size());
         if !pois.is_empty() {
@@ -707,6 +792,15 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             frame.stroke(
                 &markers,
                 canvas::Stroke::default().with_color(Color::WHITE).with_width(1.5),
+            );
+        }
+
+        if let Some((center, _)) = user {
+            let dot = Path::circle(center, USER_DOT_RADIUS);
+            frame.fill(&dot, USER_COLOR);
+            frame.stroke(
+                &dot,
+                canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
             );
         }
 

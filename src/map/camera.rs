@@ -5,6 +5,9 @@ pub const TILE_SIZE: f32 = 512.0;
 
 pub const MIN_ZOOM: f64 = 0.0;
 pub const MAX_ZOOM: f64 = 17.0;
+/// Length of the equator, in meters.
+const EARTH_CIRCUMFERENCE: f64 = 40_075_016.686;
+
 /// Highest zoom the tile source serves; beyond it, tiles are scaled up.
 const MAX_TILE_ZOOM: u8 = 14;
 
@@ -74,6 +77,11 @@ impl Camera {
 
     pub fn zoom(&self) -> f64 {
         self.zoom
+    }
+
+    /// Ground distance one pixel covers at latitude `lat`, in meters.
+    pub fn meters_per_pixel(&self, lat: f64) -> f64 {
+        EARTH_CIRCUMFERENCE * lat.to_radians().cos() / world_size(self.zoom)
     }
 
     /// Viewport position of a point in Web Mercator coordinates spanning 0..1.
@@ -160,6 +168,15 @@ impl Camera {
 
         tiles
     }
+}
+
+/// Zoom at which a circle of `radius` meters around latitude `lat` spans half of
+/// `span` pixels.
+pub fn zoom_showing(radius: f64, lat: f64, span: f32) -> f64 {
+    let meters_per_pixel = 4.0 * radius / f64::from(span);
+    (EARTH_CIRCUMFERENCE * lat.to_radians().cos() / (f64::from(TILE_SIZE) * meters_per_pixel))
+        .log2()
+        .clamp(MIN_ZOOM, MAX_ZOOM)
 }
 
 /// Web Mercator position of a latitude and longitude, spanning 0..1 on both axes.
