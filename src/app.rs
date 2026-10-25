@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::fl;
 use crate::map::details::{self, PoiDetails};
 use crate::map::location::{self, Position};
+use crate::map::style::MapTheme;
 use crate::map::poi::{OsmId, Poi};
 use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
@@ -125,7 +126,9 @@ impl cosmic::Application for AppModel {
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
 
-        let (map, tiles) = MapView::new();
+        let (mut map, tiles) = MapView::new();
+        // Before the map requests any tile, which happens once it knows its size.
+        map.set_theme(MapTheme::from_dark(cosmic::theme::is_dark()));
 
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
@@ -197,6 +200,16 @@ impl cosmic::Application for AppModel {
         };
 
         vec![search]
+    }
+
+    /// The system theme changed, including between light and dark mode.
+    fn system_theme_update(
+        &mut self,
+        _keys: &[&'static str],
+        new_theme: &cosmic::cosmic_theme::Theme,
+    ) -> Task<cosmic::Action<Self::Message>> {
+        self.map.set_theme(MapTheme::from_dark(new_theme.is_dark));
+        Task::none()
     }
 
     /// Ctrl+F, handled by libcosmic.

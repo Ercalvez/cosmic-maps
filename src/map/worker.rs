@@ -27,6 +27,7 @@ use maplibre::{
 
 use super::camera::TileId;
 use super::poi::{Poi, parse_pois, system_languages};
+use super::style::MapTheme;
 use super::state::{MapCommand, RenderedTile};
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
@@ -51,24 +52,26 @@ pub fn spawn(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
 }
 
 async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
-    let style = Style::default();
     let languages = system_languages();
     let (frame_tx, frame_rx) = std::sync::mpsc::channel();
-    let mut map = create_map(style.clone(), frame_tx).await;
+    // Themes only change colours, so the map keeps the light style's layers.
+    let mut map = create_map(MapTheme::Light.style(), frame_tx).await;
     println!("MapLibre initialized");
 
     let mut queue: Vec<TileId> = Vec::new();
+    let mut theme = MapTheme::Light;
+    let mut style = theme.style();
 
     loop {
         // Block while idle. Blocking is fine: this thread only serves the map.
         if queue.is_empty() {
             let Ok(command) = rx.recv() else { break };
-            apply(command, &mut queue);
+            apply(command, &mut queue, &mut theme, &mut style);
         }
 
         // Pick up newer requests so tiles that scrolled away are dropped.
         while let Ok(command) = rx.try_recv() {
-            apply(command, &mut queue);
+            apply(command, &mut queue, &mut theme, &mut style);
         }
 
         if queue.is_empty() {
@@ -87,6 +90,7 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
             tile,
             image,
             pois: pois.into(),
+            theme,
         };
         if tx.unbounded_send(rendered).is_err() {
             break;
@@ -94,9 +98,13 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
     }
 }
 
-fn apply(command: MapCommand, queue: &mut Vec<TileId>) {
+fn apply(command: MapCommand, queue: &mut Vec<TileId>, theme: &mut MapTheme, style: &mut Style) {
     match command {
         MapCommand::Want(tiles) => *queue = tiles,
+        MapCommand::SetTheme(new_theme) => {
+            *theme = new_theme;
+            *style = new_theme.style();
+        }
     }
 }
 

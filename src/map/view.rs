@@ -15,6 +15,7 @@ use super::location::Position;
 use super::details::{self, PoiDetails, Shape, Wheelchair};
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
+use super::style::MapTheme;
 
 /// Initial view: Berlin.
 const INITIAL_CENTER: (f64, f64) = (52.52, 13.405);
@@ -32,7 +33,6 @@ const CLICK_TOLERANCE: f32 = 4.0;
 /// tiles in use only hold a few POIs.
 const POI_MIN_ZOOM: f64 = 15.0;
 const POI_MARKER_RADIUS: f32 = 3.5;
-const POI_MARKER: Color = Color::from_rgb(0.33, 0.33, 0.38);
 /// Farthest a click may land from a POI marker, in pixels, to select it.
 const POI_HIT_RADIUS: f32 = 10.0;
 /// The same for POIs without a marker, which have to be aimed at more precisely.
@@ -52,8 +52,6 @@ const PLACE_ZOOM: f64 = 16.0;
 /// How many levels up to look for a loaded tile to show while one is missing.
 const MAX_FALLBACK_LEVELS: u8 = 6;
 
-const BACKGROUND: Color = Color::from_rgb(0.85, 0.85, 0.85);
-const PLACEHOLDER: Color = Color::from_rgb(0.78, 0.78, 0.78);
 
 /// Interactions reported by the map widget.
 #[derive(Debug, Clone)]
@@ -105,12 +103,27 @@ enum DetailsState {
     Unavailable,
 }
 
+/// A rendered tile, or `None` if it failed to load.
+struct CachedTile {
+    image: Option<Handle>,
+    theme: MapTheme,
+}
+
+impl CachedTile {
+    /// Rendered in another theme. Failed tiles are not retried for a theme change.
+    fn is_stale(&self, theme: MapTheme) -> bool {
+        self.image.is_some() && self.theme != theme
+    }
+}
+
 pub struct MapView {
     state: MapState,
     camera: Camera,
     viewport: Size,
-    /// Rendered tiles; `None` marks tiles that failed to load.
-    tiles: HashMap<TileId, Option<Handle>>,
+    /// Rendered tiles, possibly in a previous theme until re-rendered.
+    tiles: HashMap<TileId, CachedTile>,
+    /// Style tiles are rendered with; tiles in another one are re-rendered.
+    theme: MapTheme,
     pois: HashMap<TileId, Arc<[Poi]>>,
     /// POI shown in the place panel.
     selected: Option<Poi>,
@@ -139,6 +152,7 @@ impl MapView {
             camera: Camera::from_lat_lon(lat, lon, INITIAL_ZOOM),
             viewport: Size::ZERO,
             tiles: HashMap::new(),
+            theme: MapTheme::Light,
             pois: HashMap::new(),
             selected: None,
             lookup: None,
@@ -278,8 +292,23 @@ impl MapView {
         Some(MapAction::FetchDetails(osm_id))
     }
 
+    /// Switches the map's colours. Tiles on screen stay until re-rendered.
+    pub fn set_theme(&mut self, theme: MapTheme) {
+        if theme == self.theme {
+            return;
+        }
+        self.theme = theme;
+        // Before the request below, which the worker then renders in this theme.
+        self.state.set_theme(theme);
+        self.request_tiles();
+    }
+
     pub fn insert_tile(&mut self, rendered: RenderedTile) {
-        self.tiles.insert(rendered.tile, rendered.image);
+        let cached = CachedTile {
+            image: rendered.image,
+            theme: rendered.theme,
+        };
+        self.tiles.insert(rendered.tile, cached);
         self.pois.insert(rendered.tile, rendered.pois);
     }
 
@@ -345,7 +374,7 @@ impl MapView {
             .visible_tiles(self.viewport)
             .into_iter()
             .map(|tile| tile.id)
-            .filter(|id| !self.tiles.contains_key(id))
+            .filter(|id| self.tiles.get(id).is_none_or(|cached| cached.is_stale(self.theme)))
             .collect();
 
         if missing != self.wanted {
@@ -358,7 +387,7 @@ impl MapView {
     fn loaded_ancestor(&self, tile: TileId) -> Option<(TileId, &Handle)> {
         (1..=MAX_FALLBACK_LEVELS)
             .filter_map(|levels| tile.ancestor(levels))
-            .find_map(|id| Some((id, self.tiles.get(&id)?.as_ref()?)))
+            .find_map(|id| Some((id, self.tiles.get(&id)?.image.as_ref()?)))
     }
 
     pub fn view<'a, Message>(
@@ -695,12 +724,12 @@ where
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry<cosmic::Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), BACKGROUND);
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.map.theme.background());
 
         for tile in self.map.camera.visible_tiles(bounds.size()) {
             let rect = Rectangle::new(tile.position, Size::new(tile.size, tile.size));
 
-            if let Some(Some(handle)) = self.map.tiles.get(&tile.id) {
+            if let Some(handle) = self.map.tiles.get(&tile.id).and_then(|cached| cached.image.as_ref()) {
                 frame.draw_image(rect, handle);
             } else if let Some((ancestor, handle)) = self.map.loaded_ancestor(tile.id) {
                 // `with_clip` replaces the frame's clip instead of narrowing it, so keep
@@ -729,7 +758,7 @@ where
                 frame.fill_rectangle(
                     rect.position() + Vector::new(1.0, 1.0),
                     Size::new(tile.size - 2.0, tile.size - 2.0),
-                    PLACEHOLDER,
+                    self.map.theme.placeholder(),
                 );
             }
         }
@@ -810,10 +839,11 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
                     builder.circle(*position, POI_MARKER_RADIUS);
                 }
             });
-            frame.fill(&markers, POI_MARKER);
+            let (fill, outline) = self.map.theme.poi_marker();
+            frame.fill(&markers, fill);
             frame.stroke(
                 &markers,
-                canvas::Stroke::default().with_color(Color::WHITE).with_width(1.5),
+                canvas::Stroke::default().with_color(outline).with_width(1.5),
             );
         }
 

@@ -6,6 +6,7 @@ use cosmic::iced::widget::image::Handle;
 
 use super::camera::TileId;
 use super::poi::Poi;
+use super::style::MapTheme;
 
 pub struct MapState {
     renderer_tx: Sender<MapCommand>,
@@ -18,11 +19,15 @@ pub struct RenderedTile {
     pub image: Option<Handle>,
     /// Named POIs in the tile. Shared, so cloning the message stays cheap.
     pub pois: Arc<[Poi]>,
+    /// The style the image was rendered with.
+    pub theme: MapTheme,
 }
 
 pub enum MapCommand {
     /// Tiles to render, in priority order. Replaces any earlier request.
     Want(Vec<TileId>),
+    /// Render with this style from now on.
+    SetTheme(MapTheme),
 }
 
 impl MapState {
@@ -39,5 +44,9 @@ impl MapState {
 
     pub fn want(&self, tiles: Vec<TileId>) {
         let _ = self.renderer_tx.send(MapCommand::Want(tiles));
+    }
+
+    pub fn set_theme(&self, theme: MapTheme) {
+        let _ = self.renderer_tx.send(MapCommand::SetTheme(theme));
     }
 }

@@ -4,6 +4,7 @@ mod http;
 pub mod location;
 pub mod poi;
 pub mod search;
+pub mod style;
 pub mod state;
 pub mod view;
 pub mod worker;
