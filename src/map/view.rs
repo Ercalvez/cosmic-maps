@@ -8,8 +8,11 @@ use cosmic::iced::{Color, Length, Point, Rectangle, Size, Vector, mouse};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon, popover};
 
+use crate::fl;
+
 use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId};
-use super::poi::Poi;
+use super::details::{self, PoiDetails, Wheelchair};
+use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
 
 /// Initial view: Berlin.
@@ -29,6 +32,8 @@ const POI_HIT_RADIUS: f32 = 20.0;
 const MARKER_RADIUS: f32 = 6.0;
 /// Gap between the selected POI and the corner of its popover.
 const POPOVER_OFFSET: f32 = 8.0;
+/// Keeps long addresses and opening hours from making the popover too wide.
+const POPOVER_MAX_WIDTH: f32 = 360.0;
 
 /// How many levels up to look for a loaded tile to show while one is missing.
 const MAX_FALLBACK_LEVELS: u8 = 6;
@@ -37,7 +42,7 @@ const BACKGROUND: Color = Color::from_rgb(0.85, 0.85, 0.85);
 const PLACEHOLDER: Color = Color::from_rgb(0.78, 0.78, 0.78);
 
 /// Interactions reported by the map widget.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum MapEvent {
     /// Move the map content by this many screen pixels.
     Pan { dx: f64, dy: f64 },
@@ -47,6 +52,25 @@ pub enum MapEvent {
     /// A click without dragging, at this position in the map.
     Click(Point),
     ClosePopover,
+    /// A link in the popover, such as a website or a `tel:` URI.
+    OpenUrl(String),
+}
+
+/// Work the map needs the app to do, returned from [`MapView::on_event`].
+#[derive(Debug, Clone)]
+pub enum MapAction {
+    /// Fetch details with [`details::fetch`] and pass them to
+    /// [`MapView::insert_details`].
+    FetchDetails(OsmId),
+    OpenUrl(String),
+}
+
+/// Extra information about a POI, by OpenStreetMap object.
+enum DetailsState {
+    Loading,
+    Loaded(PoiDetails),
+    /// Nominatim does not know the object; not asked again.
+    Unavailable,
 }
 
 pub struct MapView {
@@ -58,6 +82,7 @@ pub struct MapView {
     pois: HashMap<TileId, Arc<[Poi]>>,
     /// POI whose popover is shown.
     selected: Option<Poi>,
+    details: HashMap<OsmId, DetailsState>,
     /// Last request sent to the worker, to avoid resending it on every pan.
     wanted: Vec<TileId>,
 }
@@ -76,13 +101,16 @@ impl MapView {
             tiles: HashMap::new(),
             pois: HashMap::new(),
             selected: None,
+            details: HashMap::new(),
             wanted: Vec::new(),
         };
 
         (map, tiles)
     }
 
-    pub fn on_event(&mut self, event: MapEvent) {
+    pub fn on_event(&mut self, event: MapEvent) -> Option<MapAction> {
+        let mut action = None;
+
         match event {
             MapEvent::Pan { dx, dy } => self.camera.pan(dx, dy),
             MapEvent::Zoom { delta, anchor } => {
@@ -90,11 +118,43 @@ impl MapView {
                 self.camera.zoom_at(delta, anchor, self.viewport);
             }
             MapEvent::Resized(size) => self.viewport = size,
-            MapEvent::Click(point) => self.selected = self.poi_at(point),
+            MapEvent::Click(point) => {
+                self.selected = self.poi_at(point);
+                action = self.request_details();
+            }
             MapEvent::ClosePopover => self.selected = None,
+            MapEvent::OpenUrl(url) => action = Some(MapAction::OpenUrl(url)),
         }
 
         self.request_tiles();
+        action
+    }
+
+    pub fn insert_details(&mut self, osm_id: OsmId, result: Result<PoiDetails, details::Error>) {
+        match result {
+            Ok(details) => {
+                self.details.insert(osm_id, DetailsState::Loaded(details));
+            }
+            Err(details::Error::NotFound) => {
+                self.details.insert(osm_id, DetailsState::Unavailable);
+            }
+            Err(details::Error::Network(err)) => {
+                // Forget the request, so selecting the POI again retries it.
+                eprintln!("failed to fetch details of {osm_id:?}: {err}");
+                self.details.remove(&osm_id);
+            }
+        }
+    }
+
+    /// Asks for the selected POI's details, unless they are known or on their way.
+    fn request_details(&mut self) -> Option<MapAction> {
+        let osm_id = self.selected.as_ref()?.osm_id?;
+        if self.details.contains_key(&osm_id) {
+            return None;
+        }
+
+        self.details.insert(osm_id, DetailsState::Loading);
+        Some(MapAction::FetchDetails(osm_id))
     }
 
     pub fn insert_tile(&mut self, rendered: RenderedTile) {
@@ -182,7 +242,10 @@ impl MapView {
             .selected
             .as_ref()
             .zip(self.selected_position())
-            .map(|(poi, position)| (poi_popup(poi, close.clone()), position));
+            .map(|(poi, position)| {
+                let details = poi.osm_id.and_then(|osm_id| self.details.get(&osm_id));
+                (poi_popup(poi, details, &on_event), position)
+            });
 
         let map = widget::canvas(MapCanvas {
             map: self,
@@ -202,7 +265,11 @@ impl MapView {
     }
 }
 
-fn poi_popup<'a, Message: Clone + 'static>(poi: &'a Poi, close: Message) -> Element<'a, Message> {
+fn poi_popup<'a, Message: Clone + 'static>(
+    poi: &'a Poi,
+    details: Option<&'a DetailsState>,
+    on_event: &impl Fn(MapEvent) -> Message,
+) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
 
     // Translated name first, with the local name below as a caption, the way
@@ -217,16 +284,88 @@ fn poi_popup<'a, Message: Clone + 'static>(poi: &'a Poi, close: Message) -> Elem
         .push_maybe(poi.category().map(widget::text::caption))
         .spacing(2);
 
+    let close = widget::button::icon(icon::from_name("window-close-symbolic"))
+        .on_press(on_event(MapEvent::ClosePopover));
+    let header = widget::row::with_capacity(2)
+        .push(names.width(Length::Fill))
+        .push(close)
+        .align_y(cosmic::iced::Alignment::Center)
+        .spacing(spacing.space_xs);
+
+    let details: Option<Element<'a, Message>> = match details {
+        Some(DetailsState::Loading) => {
+            Some(widget::text::caption(fl!("poi-details-loading")).into())
+        }
+        Some(DetailsState::Loaded(details)) => details_rows(details, on_event),
+        Some(DetailsState::Unavailable) | None => None,
+    };
+
     widget::container(
-        widget::row::with_capacity(2)
-            .push(names)
-            .push(widget::button::icon(icon::from_name("window-close-symbolic")).on_press(close))
-            .align_y(cosmic::iced::Alignment::Center)
+        widget::column::with_capacity(3)
+            .push(header)
+            .push_maybe(details.is_some().then(widget::divider::horizontal::default))
+            .push_maybe(details)
             .spacing(spacing.space_xs),
     )
-    .padding([spacing.space_xxs, spacing.space_xxs, spacing.space_xxs, spacing.space_s])
+    .max_width(POPOVER_MAX_WIDTH)
+    .padding([spacing.space_xxs, spacing.space_xxs, spacing.space_xs, spacing.space_s])
     .class(cosmic::theme::Container::Dropdown)
     .into()
+}
+
+/// One row per known detail, or `None` if there are none.
+fn details_rows<'a, Message: Clone + 'static>(
+    details: &'a PoiDetails,
+    on_event: &impl Fn(MapEvent) -> Message,
+) -> Option<Element<'a, Message>> {
+    let spacing = cosmic::theme::spacing();
+    let row = |icon_name: &'static str, content: Element<'a, Message>| -> Element<'a, Message> {
+        widget::row::with_capacity(2)
+            .push(icon::from_name(icon_name).size(16).icon())
+            .push(content)
+            .align_y(cosmic::iced::Alignment::Center)
+            .spacing(spacing.space_xs)
+            .into()
+    };
+    let link = |label: &'a str, url: String| -> Element<'a, Message> {
+        // `link` needs an owned label.
+        widget::button::link(label.to_owned())
+            .padding(0)
+            .on_press(on_event(MapEvent::OpenUrl(url)))
+            .into()
+    };
+
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    if let Some(address) = &details.address {
+        rows.push(row("mark-location-symbolic", widget::text::body(address).into()));
+    }
+    if let Some(hours) = &details.opening_hours {
+        rows.push(row("document-open-recent-symbolic", widget::text::body(hours).into()));
+    }
+    if let Some(website) = &details.website {
+        rows.push(row("web-browser-symbolic", link(website, website.clone())));
+    }
+    if let Some(phone) = &details.phone {
+        let uri = format!("tel:{}", phone.replace(' ', ""));
+        rows.push(row("call-start-symbolic", link(phone, uri)));
+    }
+    if let Some(wheelchair) = details.wheelchair {
+        let label = match wheelchair {
+            Wheelchair::Yes => fl!("poi-wheelchair-yes"),
+            Wheelchair::Limited => fl!("poi-wheelchair-limited"),
+            Wheelchair::No => fl!("poi-wheelchair-no"),
+        };
+        rows.push(row(
+            "preferences-desktop-accessibility-symbolic",
+            widget::text::body(label).into(),
+        ));
+    }
+
+    (!rows.is_empty()).then(|| {
+        widget::column::with_children(rows)
+            .spacing(spacing.space_xxs)
+            .into()
+    })
 }
 
 struct MapCanvas<'a, F> {

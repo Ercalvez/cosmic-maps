@@ -6,6 +6,13 @@ welcome = Welcome to COSMIC Maps 🗺️
 page-id = Page { $num }
 git-description = Git commit {$hash} on {$date}
 
+## POI details
+
+poi-details-loading = Loading details…
+poi-wheelchair-yes = Wheelchair accessible
+poi-wheelchair-limited = Partially wheelchair accessible
+poi-wheelchair-no = Not wheelchair accessible
+
 ## POI categories, keyed by OpenMapTiles `subclass` or `class` value.
 ## Missing values are shown as the raw value, made readable.
 

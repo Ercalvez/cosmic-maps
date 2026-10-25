@@ -18,7 +18,6 @@ pub struct Poi {
     pub class: Option<String>,
     /// More precise category, usually the OpenStreetMap tag value, such as `tram_stop`.
     pub subclass: Option<String>,
-    #[expect(dead_code, reason = "used to fetch extra details later")]
     pub osm_id: Option<OsmId>,
     /// Web Mercator position, with the world spanning 0..1 on both axes.
     pub position: (f64, f64),
@@ -50,7 +49,7 @@ fn readable(value: &str) -> String {
 }
 
 /// The OpenStreetMap object a POI comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OsmId {
     Node(u64),
     Way(u64),

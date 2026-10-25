@@ -2,7 +2,9 @@
 
 use crate::config::Config;
 use crate::fl;
-use crate::map::{MapEvent, MapView, RenderedTile};
+use crate::map::details::{self, PoiDetails};
+use crate::map::poi::OsmId;
+use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
@@ -44,6 +46,7 @@ pub enum Message {
     UpdateConfig(Config),
     Map(MapEvent),
     TileReady(RenderedTile),
+    PoiDetails(OsmId, Result<PoiDetails, details::Error>),
 }
 
 /// Create a COSMIC application from the app model
@@ -279,8 +282,18 @@ impl cosmic::Application for AppModel {
     /// on the application's async runtime.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::Map(event) => {
-                self.map.on_event(event);
+            Message::Map(event) => match self.map.on_event(event) {
+                Some(MapAction::FetchDetails(osm_id)) => {
+                    return cosmic::task::future(async move {
+                        Message::PoiDetails(osm_id, details::fetch(osm_id).await)
+                    });
+                }
+                Some(MapAction::OpenUrl(url)) => return self.update(Message::LaunchUrl(url)),
+                None => {}
+            },
+
+            Message::PoiDetails(osm_id, result) => {
+                self.map.insert_details(osm_id, result);
             }
 
             Message::TileReady(tile) => {
