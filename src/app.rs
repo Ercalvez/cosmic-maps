@@ -10,6 +10,7 @@ use crate::map::poi::{OsmId, Poi};
 use crate::map::routing::{self, Plan};
 use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
+use crate::place_view;
 use crate::route_view::{self, RouteChoice};
 use crate::search_box::{SEARCH_DELAY, SearchBox, SearchTarget, Submit};
 use cosmic::app::context_drawer;
@@ -72,6 +73,8 @@ pub enum Message {
     SearchSubmit(SearchTarget),
     SearchResults(SearchTarget, String, Result<Vec<SearchResult>, details::Error>),
     SearchSelect(SearchTarget, usize),
+    /// The place panel's Directions button.
+    OpenDirections,
     DirectionsMode(segmented_button::Entity),
     DirectionsSwap,
     DirectionsBack,
@@ -253,7 +256,7 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::About),
             ),
             ContextPage::Place => context_drawer::context_drawer(
-                self.map.place_panel(Message::Map)?,
+                place_view::view(self.map.place()?),
                 Message::Map(MapEvent::ClosePanel),
             ),
             ContextPage::Directions => {
@@ -456,6 +459,11 @@ impl cosmic::Application for AppModel {
                 }
             }
 
+            Message::OpenDirections => {
+                self.open_directions();
+                return self.request_route();
+            }
+
             Message::DirectionsMode(mode) => {
                 if let Some(directions) = &mut self.directions {
                     directions.select_mode(mode);
@@ -650,7 +658,7 @@ impl AppModel {
     }
 
     /// Carries out work the map asked for.
-    fn run_map_action(&mut self, action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
+    fn run_map_action(&self, action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
         match action {
             Some(MapAction::FetchDetails(osm_id)) => cosmic::task::future(async move {
                 Message::PoiDetails(osm_id, details::fetch(osm_id).await)
@@ -663,13 +671,6 @@ impl AppModel {
             }) => cosmic::task::future(async move {
                 Message::Reverse(request, details::reverse(lat, lon, zoom).await)
             }),
-            Some(MapAction::OpenUrl(url)) => {
-                cosmic::Application::update(self, Message::LaunchUrl(url))
-            }
-            Some(MapAction::OpenDirections) => {
-                self.open_directions();
-                self.request_route()
-            }
             None => Task::none(),
         }
     }
