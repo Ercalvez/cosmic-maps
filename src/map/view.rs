@@ -6,7 +6,7 @@ use cosmic::iced::futures::Stream;
 use cosmic::iced::widget::image::Handle;
 use cosmic::iced::{Color, Length, Point, Rectangle, Size, Vector, mouse};
 use cosmic::prelude::*;
-use cosmic::widget::{self, icon, popover};
+use cosmic::widget::{self, icon};
 
 use crate::fl;
 
@@ -39,10 +39,6 @@ const HIDDEN_POI_HIT_RADIUS: f32 = 6.0;
 const MARKER_RADIUS: f32 = 6.0;
 /// Zoom used to show a place picked from search, high enough for POI markers.
 const PLACE_ZOOM: f64 = 16.0;
-/// Gap between the selected POI and the corner of its popover.
-const POPOVER_OFFSET: f32 = 8.0;
-/// Keeps long addresses and opening hours from making the popover too wide.
-const POPOVER_MAX_WIDTH: f32 = 360.0;
 
 /// How many levels up to look for a loaded tile to show while one is missing.
 const MAX_FALLBACK_LEVELS: u8 = 6;
@@ -60,8 +56,8 @@ pub enum MapEvent {
     Resized(Size),
     /// A click without dragging, at this position in the map.
     Click(Point),
-    ClosePopover,
-    /// A link in the popover, such as a website or a `tel:` URI.
+    ClosePanel,
+    /// A link in the place panel, such as a website or a `tel:` URI.
     OpenUrl(String),
 }
 
@@ -105,7 +101,7 @@ pub struct MapView {
     /// Rendered tiles; `None` marks tiles that failed to load.
     tiles: HashMap<TileId, Option<Handle>>,
     pois: HashMap<TileId, Arc<[Poi]>>,
-    /// POI whose popover is shown.
+    /// POI shown in the place panel.
     selected: Option<Poi>,
     /// Shown instead of `selected` until the lookup answers.
     lookup: Option<Lookup>,
@@ -148,19 +144,17 @@ impl MapView {
                 self.camera.zoom_at(delta, anchor, self.viewport);
             }
             MapEvent::Resized(size) => self.viewport = size,
+            // Every click shows what is there; the panel closes with its own button.
             MapEvent::Click(point) => {
                 if let Some(poi) = self.poi_at(point) {
                     self.lookup = None;
                     self.selected = Some(poi);
                     action = self.request_details();
-                } else if self.selected.is_some() || self.lookup.is_some() {
-                    // A click elsewhere closes the popover.
-                    self.close_popover();
                 } else {
                     action = Some(self.look_up(point));
                 }
             }
-            MapEvent::ClosePopover => self.close_popover(),
+            MapEvent::ClosePanel => self.close_panel(),
             MapEvent::OpenUrl(url) => action = Some(MapAction::OpenUrl(url)),
         }
 
@@ -168,7 +162,8 @@ impl MapView {
         action
     }
 
-    /// Centers the map on `poi` and opens its popover, such as for a search result.
+    /// Centers the map on `poi` and shows it in the place panel, such as for a search
+    /// result.
     pub fn show_place(&mut self, poi: Poi) -> Option<MapAction> {
         self.camera = Camera::centered_on(poi.position, PLACE_ZOOM);
         self.lookup = None;
@@ -198,7 +193,7 @@ impl MapView {
         }
     }
 
-    fn close_popover(&mut self) {
+    fn close_panel(&mut self) {
         self.selected = None;
         self.lookup = None;
     }
@@ -207,6 +202,8 @@ impl MapView {
     fn look_up(&mut self, point: Point) -> MapAction {
         let position = self.camera.to_world(point, self.viewport);
         let (lat, lon) = lat_lon(position);
+        // The panel shows the lookup, not the previous place, until it answers.
+        self.selected = None;
         self.next_lookup += 1;
         self.lookup = Some(Lookup {
             request: self.next_lookup,
@@ -228,7 +225,7 @@ impl MapView {
         request: u64,
         result: Result<Option<(Poi, PoiDetails)>, details::Error>,
     ) {
-        // A newer click, or closing the popover, replaced it.
+        // A newer click, or closing the panel, replaced it.
         if self.lookup.map(|lookup| lookup.request) != Some(request) {
             return;
         }
@@ -369,18 +366,6 @@ impl MapView {
         .align_right(Length::Fill)
         .align_top(Length::Fill);
 
-        let close = on_event(MapEvent::ClosePopover);
-        let poi_popup = self.selected_position().map(|position| {
-            let popup = match &self.selected {
-                Some(poi) => {
-                    let details = poi.osm_id.and_then(|osm_id| self.details.get(&osm_id));
-                    poi_popup(poi, details, &on_event)
-                }
-                None => lookup_popup(&on_event),
-            };
-            (popup, position)
-        });
-
         let map = widget::canvas(MapCanvas {
             map: self,
             on_event,
@@ -393,15 +378,29 @@ impl MapView {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        // Clicks outside the map, such as on the nav bar, also close the popover.
-        let mut map =
-            popover(cosmic::iced::widget::stack![map, markers, controls]).on_close(close);
-        if let Some((popup, position)) = poi_popup {
-            let corner = position + Vector::new(POPOVER_OFFSET, POPOVER_OFFSET);
-            map = map.popup(popup).position(popover::Position::Point(corner));
-        }
+        cosmic::iced::widget::stack![map, markers, controls].into()
+    }
 
-        map.into()
+    /// Whether a place is selected or being looked up, for the place panel.
+    pub fn has_place(&self) -> bool {
+        self.selected.is_some() || self.lookup.is_some()
+    }
+
+    /// What the place panel shows: the selected place, a lookup in progress, or
+    /// `None` when nothing is selected. The panel provides the close button and
+    /// the scrolling.
+    pub fn place_panel<'a, Message: Clone + 'static>(
+        &'a self,
+        on_event: impl Fn(MapEvent) -> Message + 'a,
+    ) -> Option<Element<'a, Message>> {
+        match (&self.selected, self.lookup) {
+            (Some(poi), _) => {
+                let details = poi.osm_id.and_then(|osm_id| self.details.get(&osm_id));
+                Some(place_panel(poi, details, &on_event))
+            }
+            (None, Some(_)) => Some(widget::text::caption(fl!("poi-looking-up")).into()),
+            (None, None) => None,
+        }
     }
 }
 
@@ -426,7 +425,7 @@ fn max_poi_rank(zoom: f64) -> Option<u32> {
     }
 }
 
-fn poi_popup<'a, Message: Clone + 'static>(
+fn place_panel<'a, Message: Clone + 'static>(
     poi: &'a Poi,
     details: Option<&'a DetailsState>,
     on_event: &impl Fn(MapEvent) -> Message,
@@ -445,14 +444,6 @@ fn poi_popup<'a, Message: Clone + 'static>(
         .push_maybe(poi.category().map(widget::text::caption))
         .spacing(2);
 
-    let close = widget::button::icon(icon::from_name("window-close-symbolic"))
-        .on_press(on_event(MapEvent::ClosePopover));
-    let header = widget::row::with_capacity(2)
-        .push(names.width(Length::Fill))
-        .push(close)
-        .align_y(cosmic::iced::Alignment::Center)
-        .spacing(spacing.space_xs);
-
     let details: Option<Element<'a, Message>> = match details {
         Some(DetailsState::Loading) => {
             Some(widget::text::caption(fl!("poi-details-loading")).into())
@@ -461,38 +452,12 @@ fn poi_popup<'a, Message: Clone + 'static>(
         Some(DetailsState::Unavailable) | None => None,
     };
 
-    widget::container(
-        widget::column::with_capacity(3)
-            .push(header)
-            .push_maybe(details.is_some().then(widget::divider::horizontal::default))
-            .push_maybe(details)
-            .spacing(spacing.space_xs),
-    )
-    .max_width(POPOVER_MAX_WIDTH)
-    .padding([spacing.space_xxs, spacing.space_xxs, spacing.space_xs, spacing.space_s])
-    .class(cosmic::theme::Container::Dropdown)
-    .into()
-}
-
-/// Shown at a click while finding what is there.
-fn lookup_popup<'a, Message: Clone + 'static>(
-    on_event: &impl Fn(MapEvent) -> Message,
-) -> Element<'a, Message> {
-    let spacing = cosmic::theme::spacing();
-    let close = widget::button::icon(icon::from_name("window-close-symbolic"))
-        .on_press(on_event(MapEvent::ClosePopover));
-
-    widget::container(
-        widget::row::with_capacity(2)
-            .push(widget::text::caption(fl!("poi-looking-up")).width(Length::Fill))
-            .push(close)
-            .align_y(cosmic::iced::Alignment::Center)
-            .spacing(spacing.space_xs),
-    )
-    .max_width(POPOVER_MAX_WIDTH)
-    .padding([spacing.space_xxs, spacing.space_xxs, spacing.space_xxs, spacing.space_s])
-    .class(cosmic::theme::Container::Dropdown)
-    .into()
+    widget::column::with_capacity(3)
+        .push(names)
+        .push_maybe(details.is_some().then(widget::divider::horizontal::default))
+        .push_maybe(details)
+        .spacing(spacing.space_xs)
+        .into()
 }
 
 /// One row per known detail, or `None` if there are none.

@@ -8,11 +8,10 @@ use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::futures::StreamExt;
-use cosmic::iced::{Alignment, Length, Subscription, event, keyboard};
+use cosmic::iced::{Length, Subscription, event, keyboard};
 use cosmic::prelude::*;
-use cosmic::widget::{self, about::About, icon, menu, nav_bar};
+use cosmic::widget::{self, about::About, icon, menu};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -39,8 +38,6 @@ pub struct AppModel {
     about: About,
 
     map: MapView,
-    /// Contains items assigned to the nav bar panel.
-    nav: nav_bar::Model,
     /// Key bindings for the application's menu bar.
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// Configuration data that persists between application runs.
@@ -110,27 +107,12 @@ impl cosmic::Application for AppModel {
 
     /// Initializes the application with any given flags and startup commands.
     fn init(
-        core: cosmic::Core,
+        mut core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        // Create a nav bar with three page items.
-        let mut nav = nav_bar::Model::default();
-
-        nav.insert()
-            .text(fl!("page-id", num = 1))
-            .data::<Page>(Page::Page1)
-            .icon(icon::from_name("applications-science-symbolic"))
-            .activate();
-
-        nav.insert()
-            .text(fl!("page-id", num = 2))
-            .data::<Page>(Page::Page2)
-            .icon(icon::from_name("applications-system-symbolic"));
-
-        nav.insert()
-            .text(fl!("page-id", num = 3))
-            .data::<Page>(Page::Page3)
-            .icon(icon::from_name("applications-games-symbolic"));
+        // Lay the context drawer out beside the map rather than over it. As an
+        // overlay, it covers the whole map area and the map stops receiving clicks.
+        core.window.context_is_overlay = false;
 
         // Create the about widget
         let about = About::default()
@@ -147,7 +129,6 @@ impl cosmic::Application for AppModel {
             core,
             context_page: ContextPage::default(),
             about,
-            nav,
             key_binds: HashMap::new(),
             // Optional configuration file for an application.
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
@@ -220,18 +201,13 @@ impl cosmic::Application for AppModel {
         self.update(Message::SearchActivate)
     }
 
-    /// Esc closes the search first, then the POI popover.
+    /// Esc closes the search first, then the place panel.
     fn on_escape(&mut self) -> Task<cosmic::Action<Self::Message>> {
         if self.search_active {
             self.update(Message::SearchClear)
         } else {
-            self.update(Message::Map(MapEvent::ClosePopover))
+            self.update(Message::Map(MapEvent::ClosePanel))
         }
-    }
-
-    /// Enables the COSMIC application to create a nav bar with this model.
-    fn nav_model(&self) -> Option<&nav_bar::Model> {
-        Some(&self.nav)
     }
 
     /// Display a context drawer if the context page is requested.
@@ -246,6 +222,10 @@ impl cosmic::Application for AppModel {
                 |url| Message::LaunchUrl(url.to_string()),
                 Message::ToggleContextPage(ContextPage::About),
             ),
+            ContextPage::Place => context_drawer::context_drawer(
+                self.map.place_panel(Message::Map)?,
+                Message::Map(MapEvent::ClosePanel),
+            ),
         })
     }
 
@@ -254,54 +234,12 @@ impl cosmic::Application for AppModel {
     /// Application events will be processed through the view. Any messages emitted by
     /// events received by widgets will be passed to the update method.
     fn view(&self) -> Element<'_, Self::Message> {
-        let space_s = cosmic::theme::spacing().space_s;
-        let content: Element<_> = match self.nav.active_data::<Page>().unwrap() {
-            // The map fills all the space next to the nav bar, whether it is shown or not.
-            Page::Page1 => {
-                let map = self.map.view(Message::Map);
-                if !self.search_active || self.search_results.is_empty() {
-                    return map;
-                }
-                return cosmic::iced::widget::stack![map, self.search_results_view()].into();
-            }
-
-            Page::Page2 => {
-                let header = widget::row::with_capacity(2)
-                    .push(widget::text::title1(fl!("welcome")))
-                    .push(widget::text::title3(fl!("page-id", num = 2)))
-                    .align_y(Alignment::End)
-                    .spacing(space_s);
-
-                widget::column::with_capacity(1)
-                    .push(header)
-                    .spacing(space_s)
-                    .height(Length::Fill)
-                    .into()
-            }
-
-            Page::Page3 => {
-                let header = widget::row::with_capacity(2)
-                    .push(widget::text::title1(fl!("welcome")))
-                    .push(widget::text::title3(fl!("page-id", num = 3)))
-                    .align_y(Alignment::End)
-                    .spacing(space_s);
-
-                widget::column::with_capacity(1)
-                    .push(header)
-                    .spacing(space_s)
-                    .height(Length::Fill)
-                    .into()
-            }
-        };
-
-        widget::container(content)
-            .width(600)
-            .height(Length::Fill)
-            .apply(widget::container)
-            .width(Length::Fill)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .into()
+        // The map fills the window, with search results over it while shown.
+        let map = self.map.view(Message::Map);
+        if !self.search_active || self.search_results.is_empty() {
+            return map;
+        }
+        cosmic::iced::widget::stack![map, self.search_results_view()].into()
     }
 
     /// Register subscriptions for this application.
@@ -358,7 +296,11 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::Map(event) => {
+                let changes_place = matches!(event, MapEvent::Click(_) | MapEvent::ClosePanel);
                 let action = self.map.on_event(event);
+                if changes_place {
+                    self.sync_place_drawer();
+                }
                 return self.run_map_action(action);
             }
 
@@ -436,6 +378,7 @@ impl cosmic::Application for AppModel {
                 self.search_results.clear();
                 self.search_highlight = None;
                 let action = self.map.show_place(result.poi);
+                self.sync_place_drawer();
                 return self.run_map_action(action);
             }
 
@@ -473,6 +416,7 @@ impl cosmic::Application for AppModel {
 
             Message::Reverse(request, result) => {
                 self.map.insert_reverse(request, result);
+                self.sync_place_drawer();
             }
 
             Message::TileReady(tile) => {
@@ -503,17 +447,21 @@ impl cosmic::Application for AppModel {
         }
         Task::none()
     }
-
-    /// Called when a nav item is selected.
-    fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<cosmic::Action<Self::Message>> {
-        // Activate the page in the model.
-        self.nav.activate(id);
-
-        self.update_title()
-    }
 }
 
 impl AppModel {
+    /// Shows the place drawer while a place is selected, and hides it otherwise.
+    /// Called when the selection may have changed, so that panning or the About
+    /// drawer do not bring it back.
+    fn sync_place_drawer(&mut self) {
+        if self.map.has_place() {
+            self.context_page = ContextPage::Place;
+            self.core.window.show_context = true;
+        } else if self.context_page == ContextPage::Place {
+            self.core.window.show_context = false;
+        }
+    }
+
     /// Carries out work the map asked for.
     fn run_map_action(&mut self, action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
         match action {
@@ -586,12 +534,7 @@ impl AppModel {
 
     /// Updates the header and window titles.
     pub fn update_title(&mut self) -> Task<cosmic::Action<Message>> {
-        let mut window_title = fl!("app-title");
-
-        if let Some(page) = self.nav.text(self.nav.active()) {
-            window_title.push_str(" — ");
-            window_title.push_str(page);
-        }
+        let window_title = fl!("app-title");
 
         if let Some(id) = self.core.main_window_id() {
             self.set_window_title(window_title, id)
@@ -601,18 +544,13 @@ impl AppModel {
     }
 }
 
-/// The page to display in the application.
-pub enum Page {
-    Page1,
-    Page2,
-    Page3,
-}
-
 /// The context page to display in the context drawer.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum ContextPage {
     #[default]
     About,
+    /// The place selected on the map.
+    Place,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
