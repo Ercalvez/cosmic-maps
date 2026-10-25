@@ -208,12 +208,14 @@ fn poi_popup<'a, Message: Clone + 'static>(poi: &'a Poi, close: Message) -> Elem
     // Translated name first, with the local name below as a caption, the way
     // libcosmic's settings items pair a title with its description.
     let names = match &poi.translated_name {
-        Some(translated) => widget::column::with_capacity(2)
+        Some(translated) => widget::column::with_capacity(3)
             .push(widget::text::heading(translated))
-            .push(widget::text::caption(&poi.name))
-            .spacing(2),
-        None => widget::column::with_capacity(1).push(widget::text::heading(&poi.name)),
+            .push(widget::text::caption(&poi.name)),
+        None => widget::column::with_capacity(2).push(widget::text::heading(&poi.name)),
     };
+    let names = names
+        .push_maybe(poi.category().map(widget::text::caption))
+        .spacing(2);
 
     widget::container(
         widget::row::with_capacity(2)

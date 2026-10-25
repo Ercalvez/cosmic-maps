@@ -38,6 +38,13 @@ pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
 });
 
 
+/// Looks up a message whose ID is only known at runtime, which `fl!()` cannot do.
+pub fn get_dynamic(message_id: &str) -> Option<String> {
+    LANGUAGE_LOADER
+        .has(message_id)
+        .then(|| LANGUAGE_LOADER.get(message_id))
+}
+
 /// Request a localized string by ID from the i18n/ directory.
 #[macro_export]
 macro_rules! fl {

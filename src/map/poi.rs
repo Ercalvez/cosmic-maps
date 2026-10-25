@@ -14,10 +14,39 @@ pub struct Poi {
     pub name: String,
     /// Name in the user's language, when the tile has one that differs from `name`.
     pub translated_name: Option<String>,
+    /// OpenMapTiles category, such as `railway`.
+    pub class: Option<String>,
+    /// More precise category, usually the OpenStreetMap tag value, such as `tram_stop`.
+    pub subclass: Option<String>,
     #[expect(dead_code, reason = "used to fetch extra details later")]
     pub osm_id: Option<OsmId>,
     /// Web Mercator position, with the world spanning 0..1 on both axes.
     pub position: (f64, f64),
+}
+
+impl Poi {
+    /// Readable kind of place, such as "Tram stop".
+    pub fn category(&self) -> Option<String> {
+        // `subclass` first: `class` can be misleading, such as `art_gallery` for
+        // street artwork.
+        let values = [self.subclass.as_deref(), self.class.as_deref()];
+
+        values
+            .iter()
+            .flatten()
+            .find_map(|value| crate::i18n::get_dynamic(&format!("poi-type-{value}")))
+            .or_else(|| values.iter().flatten().next().map(|value| readable(value)))
+    }
+}
+
+/// Turns a tag value such as `escape_game` into "Escape game".
+fn readable(value: &str) -> String {
+    let text = value.replace('_', " ");
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// The OpenStreetMap object a POI comes from.
@@ -74,6 +103,9 @@ pub fn parse_pois(data: &[u8], tile: TileId, languages: &[String]) -> Vec<Poi> {
         })
         .collect();
 
+    let class_key = layer.keys.iter().position(|key| key == "class");
+    let subclass_key = layer.keys.iter().position(|key| key == "subclass");
+
     let extent = f64::from(layer.extent.unwrap_or(DEFAULT_EXTENT));
     let tiles_per_side = f64::from(1u32 << tile.z);
 
@@ -91,6 +123,8 @@ pub fn parse_pois(data: &[u8], tile: TileId, languages: &[String]) -> Vec<Poi> {
             Some(Poi {
                 name,
                 translated_name,
+                class: class_key.and_then(|key| string_tag(layer, feature, key)),
+                subclass: subclass_key.and_then(|key| string_tag(layer, feature, key)),
                 osm_id: feature.id.and_then(OsmId::from_feature_id),
                 position: (
                     (f64::from(tile.x) + f64::from(x) / extent) / tiles_per_side,
