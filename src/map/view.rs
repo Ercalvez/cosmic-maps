@@ -205,9 +205,19 @@ impl MapView {
 fn poi_popup<'a, Message: Clone + 'static>(poi: &'a Poi, close: Message) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
 
+    // Translated name first, with the local name below as a caption, the way
+    // libcosmic's settings items pair a title with its description.
+    let names = match &poi.translated_name {
+        Some(translated) => widget::column::with_capacity(2)
+            .push(widget::text::heading(translated))
+            .push(widget::text::caption(&poi.name))
+            .spacing(2),
+        None => widget::column::with_capacity(1).push(widget::text::heading(&poi.name)),
+    };
+
     widget::container(
         widget::row::with_capacity(2)
-            .push(widget::text::heading(&poi.name))
+            .push(names)
             .push(widget::button::icon(icon::from_name("window-close-symbolic")).on_press(close))
             .align_y(cosmic::iced::Alignment::Center)
             .spacing(spacing.space_xs),

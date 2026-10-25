@@ -26,7 +26,7 @@ use maplibre::{
 };
 
 use super::camera::TileId;
-use super::poi::{Poi, parse_pois};
+use super::poi::{Poi, parse_pois, system_languages};
 use super::state::{MapCommand, RenderedTile};
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
@@ -52,6 +52,7 @@ pub fn spawn(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
 
 async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
     let style = Style::default();
+    let languages = system_languages();
     let (frame_tx, frame_rx) = std::sync::mpsc::channel();
     let mut map = create_map(style.clone(), frame_tx).await;
     println!("MapLibre initialized");
@@ -75,7 +76,7 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
         }
         let tile = queue.remove(0);
 
-        let (image, pois) = match render_tile(&mut map, &style, tile).await {
+        let (image, pois) = match render_tile(&mut map, &style, tile, &languages).await {
             Some(pois) => (frame_rx.try_recv().ok(), pois),
             None => (None, Vec::new()),
         };
@@ -117,7 +118,12 @@ async fn create_map(style: Style, tx: Sender<MapImage>) -> HeadlessMap {
 
 /// Renders a tile and returns its POIs, or `None` if it could not be fetched. The
 /// frame is sent to the channel given to `FrameCapturePlugin`.
-async fn render_tile(map: &mut HeadlessMap, style: &Style, tile: TileId) -> Option<Vec<Poi>> {
+async fn render_tile(
+    map: &mut HeadlessMap,
+    style: &Style,
+    tile: TileId,
+    languages: &[String],
+) -> Option<Vec<Poi>> {
     let coords = WorldTileCoords::from((tile.x, tile.y, tile.z.into()));
     let data = match map.fetch_tile(coords).await {
         Ok(data) => data,
@@ -134,7 +140,7 @@ async fn render_tile(map: &mut HeadlessMap, style: &Style, tile: TileId) -> Opti
 
     // Runs the schedule, which ends with `CaptureFrameSystem` sending the image.
     map.render_tile(layers);
-    Some(parse_pois(&data, tile))
+    Some(parse_pois(&data, tile, languages))
 }
 
 /// Sends every rendered frame through `tx`.

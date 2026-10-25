@@ -1,4 +1,5 @@
 use geozero::mvt::{Message, Tile, tile};
+use i18n_embed::DesktopLanguageRequester;
 
 use super::camera::TileId;
 
@@ -9,7 +10,10 @@ const DEFAULT_EXTENT: u32 = 4096;
 
 #[derive(Debug, Clone)]
 pub struct Poi {
+    /// Name in the local language, as written on site.
     pub name: String,
+    /// Name in the user's language, when the tile has one that differs from `name`.
+    pub translated_name: Option<String>,
     #[expect(dead_code, reason = "used to fetch extra details later")]
     pub osm_id: Option<OsmId>,
     /// Web Mercator position, with the world spanning 0..1 on both axes.
@@ -35,8 +39,22 @@ impl OsmId {
     }
 }
 
-/// Reads the named POIs of a vector tile.
-pub fn parse_pois(data: &[u8], tile: TileId) -> Vec<Poi> {
+/// Language subtags of the system's preferred languages, most preferred first,
+/// such as `["fr", "en"]` for `fr-FR` then `en-US`.
+pub fn system_languages() -> Vec<String> {
+    let mut languages: Vec<String> = Vec::new();
+    for requested in DesktopLanguageRequester::requested_languages() {
+        let language = requested.language.as_str().to_owned();
+        if !languages.contains(&language) {
+            languages.push(language);
+        }
+    }
+    languages
+}
+
+/// Reads the named POIs of a vector tile, with names translated into the first of
+/// `languages` the tile has.
+pub fn parse_pois(data: &[u8], tile: TileId, languages: &[String]) -> Vec<Poi> {
     let Ok(decoded) = Tile::decode(data) else {
         return Vec::new();
     };
@@ -47,6 +65,15 @@ pub fn parse_pois(data: &[u8], tile: TileId) -> Vec<Poi> {
         return Vec::new();
     };
 
+    // OpenMapTiles stores translations as `name:<language>`.
+    let translated_keys: Vec<usize> = languages
+        .iter()
+        .filter_map(|language| {
+            let key = format!("name:{language}");
+            layer.keys.iter().position(|k| *k == key)
+        })
+        .collect();
+
     let extent = f64::from(layer.extent.unwrap_or(DEFAULT_EXTENT));
     let tiles_per_side = f64::from(1u32 << tile.z);
 
@@ -56,9 +83,14 @@ pub fn parse_pois(data: &[u8], tile: TileId) -> Vec<Poi> {
         .filter_map(|feature| {
             let name = string_tag(layer, feature, name_key)?;
             let (x, y) = first_point(&feature.geometry)?;
+            let translated_name = translated_keys
+                .iter()
+                .find_map(|&key| string_tag(layer, feature, key))
+                .filter(|translated| *translated != name);
 
             Some(Poi {
                 name,
+                translated_name,
                 osm_id: feature.id.and_then(OsmId::from_feature_id),
                 position: (
                     (f64::from(tile.x) + f64::from(x) / extent) / tiles_per_side,
