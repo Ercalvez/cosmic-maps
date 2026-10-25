@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 
 use cosmic::iced::widget::canvas::{self, Action, Event, Frame, Geometry};
+use cosmic::iced::futures::Stream;
 use cosmic::iced::widget::image::Handle;
 use cosmic::iced::{Color, Length, Point, Rectangle, Size, Vector, mouse};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
 use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId};
-use super::state::MapState;
+use super::state::{MapState, RenderedTile};
 
 /// Initial view: Berlin.
 const INITIAL_CENTER: (f64, f64) = (52.52, 13.405);
@@ -46,16 +47,21 @@ pub struct MapView {
 }
 
 impl MapView {
-    pub fn new() -> Self {
+    /// Creates the map. The stream yields each tile when it is rendered; feed them
+    /// back through [`MapView::insert_tile`].
+    pub fn new() -> (Self, impl Stream<Item = RenderedTile> + Send + 'static) {
         let (lat, lon) = INITIAL_CENTER;
+        let (state, tiles) = MapState::new();
 
-        Self {
-            state: MapState::new(),
+        let map = Self {
+            state,
             camera: Camera::from_lat_lon(lat, lon, INITIAL_ZOOM),
             viewport: Size::ZERO,
             tiles: HashMap::new(),
             wanted: Vec::new(),
-        }
+        };
+
+        (map, tiles)
     }
 
     pub fn on_event(&mut self, event: MapEvent) {
@@ -71,14 +77,8 @@ impl MapView {
         self.request_tiles();
     }
 
-    /// Stores the tiles the worker finished since the last call.
-    pub fn update_image(&mut self) {
-        while let Some(rendered) = self.state.try_tile() {
-            let handle = rendered
-                .image
-                .map(|image| Handle::from_rgba(image.width, image.height, image.pixels));
-            self.tiles.insert(rendered.tile, handle);
-        }
+    pub fn insert_tile(&mut self, rendered: RenderedTile) {
+        self.tiles.insert(rendered.tile, rendered.image);
     }
 
     /// Asks the worker for visible tiles that are not rendered yet.

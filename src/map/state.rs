@@ -1,22 +1,19 @@
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
+
+use cosmic::iced::futures::channel::mpsc::{self, UnboundedReceiver};
+use cosmic::iced::widget::image::Handle;
 
 use super::camera::TileId;
 
 pub struct MapState {
     renderer_tx: Sender<MapCommand>,
-    tile_rx: Receiver<RenderedTile>,
-}
-
-pub struct MapImage {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<u8>,
 }
 
 /// Result of rendering one tile; `image` is `None` when the tile could not be loaded.
+#[derive(Debug, Clone)]
 pub struct RenderedTile {
     pub tile: TileId,
-    pub image: Option<MapImage>,
+    pub image: Option<Handle>,
 }
 
 pub enum MapCommand {
@@ -25,23 +22,18 @@ pub enum MapCommand {
 }
 
 impl MapState {
-    pub fn new() -> Self {
+    /// Starts the worker. The receiver yields tiles as soon as they are rendered.
+    pub fn new() -> (Self, UnboundedReceiver<RenderedTile>) {
         let (renderer_tx, renderer_rx) = std::sync::mpsc::channel();
-        let (tile_tx, tile_rx) = std::sync::mpsc::channel();
+        // An async channel, so the UI can await tiles instead of polling for them.
+        let (tile_tx, tile_rx) = mpsc::unbounded();
 
         crate::map::worker::spawn(renderer_rx, tile_tx);
 
-        Self {
-            renderer_tx,
-            tile_rx,
-        }
+        (Self { renderer_tx }, tile_rx)
     }
 
     pub fn want(&self, tiles: Vec<TileId>) {
         let _ = self.renderer_tx.send(MapCommand::Want(tiles));
-    }
-
-    pub fn try_tile(&self) -> Option<RenderedTile> {
-        self.tile_rx.try_recv().ok()
     }
 }

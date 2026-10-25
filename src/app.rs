@@ -2,16 +2,15 @@
 
 use crate::config::Config;
 use crate::fl;
-use crate::map::{MapEvent, MapView};
+use crate::map::{MapEvent, MapView, RenderedTile};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
-use cosmic::iced::{Alignment, Length, Subscription, event, futures, keyboard};
+use cosmic::iced::futures::StreamExt;
+use cosmic::iced::{Alignment, Length, Subscription, event, keyboard};
 use cosmic::prelude::*;
 use cosmic::widget::{self, about::About, icon, menu, nav_bar};
-use futures::SinkExt;
 use std::collections::HashMap;
-use std::time::Duration;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
@@ -44,7 +43,7 @@ pub enum Message {
     ToggleContextPage(ContextPage),
     UpdateConfig(Config),
     Map(MapEvent),
-    MapTick,
+    TileReady(RenderedTile),
 }
 
 /// Create a COSMIC application from the app model
@@ -101,6 +100,8 @@ impl cosmic::Application for AppModel {
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
 
+        let (map, tiles) = MapView::new();
+
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
@@ -121,11 +122,15 @@ impl cosmic::Application for AppModel {
                     }
                 })
                 .unwrap_or_default(),
-            map: MapView::new()
+            map,
         };
 
-        // Create a startup command that sets the window title.
-        let command = app.update_title();
+        // Set the window title, and turn each rendered tile into a message for as
+        // long as the map worker runs.
+        let command = Task::batch([
+            app.update_title(),
+            cosmic::task::stream(tiles.map(Message::TileReady)),
+        ]);
 
         (app, command)
     }
@@ -262,19 +267,6 @@ impl cosmic::Application for AppModel {
             Some(Message::Map(MapEvent::Pan { dx, dy }))
         }));
 
-        subscriptions.push(Subscription::run(|| {
-        cosmic::iced::stream::channel(1, |mut emitter: futures::channel::mpsc::Sender<_>| async move {
-                    let mut interval = tokio::time::interval(
-                        Duration::from_millis(100)
-                    );
-
-                    loop {
-                        interval.tick().await;
-                        _ = emitter.send(Message::MapTick).await;
-                    }
-                })
-}));
-
         Subscription::batch(subscriptions)
     }
 
@@ -288,8 +280,8 @@ impl cosmic::Application for AppModel {
                 self.map.on_event(event);
             }
 
-            Message::MapTick => { 
-                self.map.update_image();
+            Message::TileReady(tile) => {
+                self.map.insert_tile(tile);
             }
 
             Message::ToggleContextPage(context_page) => {

@@ -2,6 +2,9 @@ use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
+use cosmic::iced::futures::channel::mpsc::UnboundedSender;
+use cosmic::iced::widget::image::Handle;
+
 use maplibre::{
     context::MapContext,
     coords::WorldTileCoords,
@@ -23,11 +26,18 @@ use maplibre::{
 };
 
 use super::camera::TileId;
-use super::state::{MapCommand, MapImage, RenderedTile};
+use super::state::{MapCommand, RenderedTile};
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
 
-pub fn spawn(rx: Receiver<MapCommand>, tx: Sender<RenderedTile>) {
+/// A frame read back from the GPU, as RGBA pixels.
+struct MapImage {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+pub fn spawn(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
     // `HeadlessMap` is not `Send`, so it lives on its own thread with its own runtime.
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -39,7 +49,7 @@ pub fn spawn(rx: Receiver<MapCommand>, tx: Sender<RenderedTile>) {
     });
 }
 
-async fn run(rx: Receiver<MapCommand>, tx: Sender<RenderedTile>) {
+async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
     let style = Style::default();
     let (frame_tx, frame_rx) = std::sync::mpsc::channel();
     let mut map = create_map(style.clone(), frame_tx).await;
@@ -69,8 +79,10 @@ async fn run(rx: Receiver<MapCommand>, tx: Sender<RenderedTile>) {
         } else {
             None
         };
+        // Built here so the UI thread receives a cheaply clonable handle.
+        let image = image.map(|image| Handle::from_rgba(image.width, image.height, image.pixels));
 
-        if tx.send(RenderedTile { tile, image }).is_err() {
+        if tx.unbounded_send(RenderedTile { tile, image }).is_err() {
             break;
         }
     }
