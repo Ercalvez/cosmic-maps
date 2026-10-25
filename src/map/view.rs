@@ -27,8 +27,13 @@ const ZOOM_PER_PIXEL: f64 = 0.01;
 
 /// Farthest a press may move, in pixels, and still count as a click.
 const CLICK_TOLERANCE: f32 = 4.0;
-/// Farthest a click may land from a POI, in pixels, to select it.
-const POI_HIT_RADIUS: f32 = 20.0;
+/// Zoom from which POIs are drawn and clickable, as in GNOME Maps. Below it, the
+/// tiles in use only hold a few POIs.
+const POI_MIN_ZOOM: f64 = 15.0;
+const POI_MARKER_RADIUS: f32 = 3.5;
+const POI_MARKER: Color = Color::from_rgb(0.33, 0.33, 0.38);
+/// Farthest a click may land from a POI marker, in pixels, to select it.
+const POI_HIT_RADIUS: f32 = 10.0;
 const MARKER_RADIUS: f32 = 6.0;
 /// Gap between the selected POI and the corner of its popover.
 const POPOVER_OFFSET: f32 = 8.0;
@@ -162,20 +167,33 @@ impl MapView {
         self.pois.insert(rendered.tile, rendered.pois);
     }
 
-    /// The POI closest to `point`, if one is within `POI_HIT_RADIUS`.
+    /// The drawn POI closest to `point`, if one is within `POI_HIT_RADIUS`.
     fn poi_at(&self, point: Point) -> Option<Poi> {
-        self.camera
-            .visible_tiles(self.viewport)
-            .iter()
-            .filter_map(|tile| self.pois.get(&tile.id))
-            .flat_map(|pois| pois.iter())
-            .map(|poi| {
-                let distance = self.camera.to_screen(poi.position, self.viewport).distance(point);
-                (poi, distance)
-            })
+        self.drawn_pois(self.viewport)
+            .into_iter()
+            .map(|(poi, position)| (poi, position.distance(point)))
             .filter(|(_, distance)| *distance <= POI_HIT_RADIUS)
             .min_by(|(_, a), (_, b)| a.total_cmp(b))
             .map(|(poi, _)| poi.clone())
+    }
+
+    /// POIs to draw as markers, with their position in the viewport. Only the
+    /// clickable ones: none below `POI_MIN_ZOOM`, then the most important first.
+    fn drawn_pois(&self, viewport: Size) -> Vec<(&Poi, Point)> {
+        let Some(max_rank) = max_poi_rank(self.camera.zoom()) else {
+            return Vec::new();
+        };
+        let bounds = Rectangle::with_size(viewport);
+
+        self.camera
+            .visible_tiles(viewport)
+            .iter()
+            .filter_map(|tile| self.pois.get(&tile.id))
+            .flat_map(|pois| pois.iter())
+            .filter(|poi| poi.rank <= max_rank)
+            .map(|poi| (poi, self.camera.to_screen(poi.position, viewport)))
+            .filter(|(_, position)| bounds.contains(*position))
+            .collect()
     }
 
     /// Where the selected POI is on screen, if there is one and it is in view.
@@ -262,6 +280,18 @@ impl MapView {
         }
 
         map.into()
+    }
+}
+
+/// Highest POI rank drawn at `zoom`, following GNOME Maps' density limits, or
+/// `None` when no POI is drawn.
+fn max_poi_rank(zoom: f64) -> Option<u32> {
+    if zoom < POI_MIN_ZOOM {
+        None
+    } else if zoom < 17.0 {
+        Some(50)
+    } else {
+        Some(100)
     }
 }
 
@@ -508,6 +538,21 @@ where
                     PLACEHOLDER,
                 );
             }
+        }
+
+        // One path for all markers: there can be hundreds.
+        let pois = self.map.drawn_pois(bounds.size());
+        if !pois.is_empty() {
+            let markers = Path::new(|builder| {
+                for (_, position) in &pois {
+                    builder.circle(*position, POI_MARKER_RADIUS);
+                }
+            });
+            frame.fill(&markers, POI_MARKER);
+            frame.stroke(
+                &markers,
+                canvas::Stroke::default().with_color(Color::WHITE).with_width(1.5),
+            );
         }
 
         if let Some(position) = self.map.selected_position() {

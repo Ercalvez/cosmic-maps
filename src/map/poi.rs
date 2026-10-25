@@ -18,6 +18,9 @@ pub struct Poi {
     pub class: Option<String>,
     /// More precise category, usually the OpenStreetMap tag value, such as `tram_stop`.
     pub subclass: Option<String>,
+    /// Importance within the tile, lower is more important. Missing ranks are
+    /// treated as least important.
+    pub rank: u32,
     pub osm_id: Option<OsmId>,
     /// Web Mercator position, with the world spanning 0..1 on both axes.
     pub position: (f64, f64),
@@ -104,6 +107,7 @@ pub fn parse_pois(data: &[u8], tile: TileId, languages: &[String]) -> Vec<Poi> {
 
     let class_key = layer.keys.iter().position(|key| key == "class");
     let subclass_key = layer.keys.iter().position(|key| key == "subclass");
+    let rank_key = layer.keys.iter().position(|key| key == "rank");
 
     let extent = f64::from(layer.extent.unwrap_or(DEFAULT_EXTENT));
     let tiles_per_side = f64::from(1u32 << tile.z);
@@ -124,6 +128,9 @@ pub fn parse_pois(data: &[u8], tile: TileId, languages: &[String]) -> Vec<Poi> {
                 translated_name,
                 class: class_key.and_then(|key| string_tag(layer, feature, key)),
                 subclass: subclass_key.and_then(|key| string_tag(layer, feature, key)),
+                rank: rank_key
+                    .and_then(|key| integer_tag(layer, feature, key))
+                    .unwrap_or(u32::MAX),
                 osm_id: feature.id.and_then(OsmId::from_feature_id),
                 position: (
                     (f64::from(tile.x) + f64::from(x) / extent) / tiles_per_side,
@@ -142,6 +149,21 @@ fn string_tag(layer: &tile::Layer, feature: &tile::Feature, key: usize) -> Optio
         .find(|pair| pair[0] as usize == key)?;
 
     layer.values.get(pair[1] as usize)?.string_value.clone()
+}
+
+fn integer_tag(layer: &tile::Layer, feature: &tile::Feature, key: usize) -> Option<u32> {
+    let pair = feature
+        .tags
+        .chunks_exact(2)
+        .find(|pair| pair[0] as usize == key)?;
+    let value = layer.values.get(pair[1] as usize)?;
+
+    // Encoders may use any of the integer types.
+    let value = value
+        .sint_value
+        .or(value.int_value)
+        .or(value.uint_value.and_then(|v| i64::try_from(v).ok()))?;
+    u32::try_from(value).ok()
 }
 
 /// Decodes the first point of a geometry: a MoveTo command followed by
