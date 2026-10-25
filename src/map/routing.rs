@@ -5,7 +5,6 @@
 //! `User-Agent` with a contact, with visible attribution of transitous.org/sources
 //! and OpenStreetMap. Maintainers ask to be contacted before heavy `/plan` use.
 
-#![expect(dead_code, reason = "paths and stop positions are drawn on the map in phase 4")]
 
 use std::time::Duration;
 
@@ -102,6 +101,8 @@ pub struct Stop {
 pub struct PassedStop {
     pub name: String,
     pub arrival: Option<Timestamp>,
+    /// Web Mercator coordinates spanning 0..1.
+    pub position: (f64, f64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,6 +214,8 @@ struct RawLeg {
 struct RawStop {
     name: String,
     arrival: Option<Timestamp>,
+    lat: f64,
+    lon: f64,
 }
 
 #[derive(Deserialize)]
@@ -290,6 +293,7 @@ impl RawLeg {
                 .map(|stop| PassedStop {
                     name: stop.name,
                     arrival: stop.arrival,
+                    position: world_position(stop.lat, stop.lon),
                 })
                 .collect(),
             path: self
@@ -446,6 +450,7 @@ mod tests {
         assert_eq!(line.headsign.as_deref(), Some("Château de Vincennes"));
         assert_eq!(metro.stops.len(), 1);
         assert_eq!(metro.stops[0].name, "Châtelet");
+        assert_eq!(metro.stops[0].position, world_position(48.858, 2.347));
         assert_eq!(
             metro.stops[0].arrival,
             Some("2026-10-25T15:02:00Z".parse::<Timestamp>().unwrap())

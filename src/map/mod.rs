@@ -11,4 +11,4 @@ pub mod view;
 pub mod worker;
 
 pub use state::RenderedTile;
-pub use view::{MapAction, MapEvent, MapView};
+pub use view::{MapAction, MapEvent, MapView, RouteOverlay};

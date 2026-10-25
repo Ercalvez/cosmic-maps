@@ -355,6 +355,7 @@ impl cosmic::Application for AppModel {
                 // Closing the drawer also closes the directions form.
                 if matches!(event, MapEvent::ClosePanel) {
                     self.directions = None;
+                    self.show_routes(false);
                 }
                 let changes_place = matches!(event, MapEvent::Click(_) | MapEvent::ClosePanel);
                 let action = self.map.on_event(event);
@@ -473,12 +474,15 @@ impl cosmic::Application for AppModel {
                 if let Some(directions) = &mut self.directions {
                     directions.insert_route(id, result);
                 }
+                self.show_routes(true);
             }
 
             Message::RouteChoose(choice) => {
                 if let Some(directions) = &mut self.directions {
                     directions.choose(choice);
                 }
+                // The view already shows every option.
+                self.show_routes(false);
             }
 
             Message::RouteToggleStops(leg) => {
@@ -493,12 +497,14 @@ impl cosmic::Application for AppModel {
                     .as_mut()
                     .and_then(|directions| directions.page_request(later))
                 {
+                    self.show_routes(false);
                     return Self::find_route(request);
                 }
             }
 
             Message::DirectionsBack => {
                 self.directions = None;
+                self.show_routes(false);
                 self.context_page = ContextPage::Place;
                 self.core.window.show_context = self.map.has_place();
             }
@@ -606,9 +612,23 @@ impl AppModel {
     /// Updates the directions' routes after a change to the form, searching when
     /// the trip changed.
     fn request_route(&mut self) -> Task<cosmic::Action<Message>> {
-        match self.directions.as_mut().and_then(Directions::route_request) {
+        let request = self.directions.as_mut().and_then(Directions::route_request);
+        // The routes shown may no longer match the form.
+        self.show_routes(false);
+        match request {
             Some(request) => Self::find_route(request),
             None => Task::none(),
+        }
+    }
+
+    /// Draws the directions' routes on the map, or clears them, framing the
+    /// options when `fit` is set.
+    fn show_routes(&mut self, fit: bool) {
+        let routes = self.directions.as_ref().and_then(Directions::route_overlay);
+        let found = routes.is_some();
+        self.map.set_routes(routes);
+        if fit && found {
+            self.map.fit_route();
         }
     }
 

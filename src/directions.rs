@@ -14,6 +14,7 @@ use crate::fl;
 use crate::map::camera::lat_lon;
 use crate::map::location::Position;
 use crate::map::poi::Poi;
+use crate::map::RouteOverlay;
 use crate::map::routing::{self, Plan, RouteMode};
 use crate::route_view::{self, Ends, RouteChoice};
 use crate::search_box::{SearchBox, SearchTarget};
@@ -296,6 +297,33 @@ impl Directions {
     }
 
     /// Shows the details of a route option, or hides them if already shown.
+    /// The routes to draw on the map, in the order listed: the walking route
+    /// first, then transit options. The chosen one is highlighted; before any
+    /// choice, the first transit option, or the walking route in Walk mode.
+    pub fn route_overlay(&self) -> Option<RouteOverlay> {
+        let RouteState::Found(plan) = &self.route else {
+            return None;
+        };
+        let mode = self.query?.mode;
+
+        let mut itineraries: Vec<_> = plan.walk.iter().cloned().collect();
+        if mode == RouteMode::Transit {
+            itineraries.extend(plan.transit.iter().cloned());
+        }
+        let walks = usize::from(plan.walk.is_some());
+        let chosen = match self.chosen {
+            Some(RouteChoice::Walk) => 0,
+            Some(RouteChoice::Transit(index)) => walks + index,
+            None if mode == RouteMode::Transit && !plan.transit.is_empty() => walks,
+            None => 0,
+        };
+
+        Some(RouteOverlay {
+            itineraries,
+            chosen,
+        })
+    }
+
     pub fn choose(&mut self, choice: RouteChoice) {
         self.chosen = (self.chosen != Some(choice)).then_some(choice);
         self.open_stops.clear();
@@ -550,6 +578,45 @@ mod tests {
         directions.toggle_stops(1);
         directions.choose(RouteChoice::Transit(1));
         assert!(directions.open_stops.is_empty());
+    }
+
+    fn itinerary() -> routing::Itinerary {
+        routing::Itinerary {
+            duration: 600,
+            start_time: jiff::Timestamp::UNIX_EPOCH,
+            end_time: jiff::Timestamp::UNIX_EPOCH,
+            transfers: 0,
+            legs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn overlay_highlights_the_chosen_route() {
+        let mut directions = Directions::new(&place("Gare de Lyon"), Some(here()));
+        select(&mut directions, TravelMode::Transit);
+        let request = directions.route_request().unwrap();
+        let plan = Plan {
+            walk: Some(itinerary()),
+            transit: vec![itinerary(), itinerary()],
+            ..Plan::default()
+        };
+        directions.insert_route(request.id, Ok(plan));
+
+        // The walking route first, then the transit options; the first of those
+        // is highlighted until one is chosen.
+        let overlay = directions.route_overlay().unwrap();
+        assert_eq!(overlay.itineraries.len(), 3);
+        assert_eq!(overlay.chosen, 1);
+
+        directions.choose(RouteChoice::Transit(1));
+        assert_eq!(directions.route_overlay().unwrap().chosen, 2);
+        directions.choose(RouteChoice::Walk);
+        assert_eq!(directions.route_overlay().unwrap().chosen, 0);
+
+        // Nothing to draw while searching again.
+        select(&mut directions, TravelMode::Foot);
+        directions.route_request();
+        assert!(directions.route_overlay().is_none());
     }
 
     #[test]

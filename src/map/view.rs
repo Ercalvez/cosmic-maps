@@ -14,6 +14,7 @@ use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon, world_position,
 use super::location::Position;
 use super::details::{self, PoiDetails, Shape, Wheelchair};
 use super::poi::{OsmId, Poi};
+use super::routing::{Itinerary, Leg};
 use super::state::{MapState, RenderedTile};
 use super::style::MapPalette;
 
@@ -51,6 +52,26 @@ const PLACE_ZOOM: f64 = 16.0;
 
 /// How many levels up to look for a loaded tile to show while one is missing.
 const MAX_FALLBACK_LEVELS: u8 = 6;
+
+/// Width of the chosen route, of its outline on each side, and of the others.
+const ROUTE_WIDTH: f32 = 6.0;
+const ROUTE_OUTLINE: f32 = 2.0;
+const FAINT_ROUTE_WIDTH: f32 = 4.0;
+/// Space kept around a route when framing it.
+const ROUTE_PADDING: f32 = 48.0;
+/// Walking parts as dots: zero-length dashes with round caps, this far apart.
+const WALK_DOTS: [f32; 2] = [0.0, 11.0];
+const ROUTE_STOP_RADIUS: f32 = 3.0;
+const ROUTE_BOARD_RADIUS: f32 = 5.0;
+const ROUTE_END_RADIUS: f32 = 7.0;
+
+/// Routes drawn on the map: the options found, one of them chosen.
+#[derive(Debug, Clone)]
+pub struct RouteOverlay {
+    /// In the order the directions list them.
+    pub itineraries: Vec<Itinerary>,
+    pub chosen: usize,
+}
 
 
 /// Interactions reported by the map widget.
@@ -141,6 +162,8 @@ pub struct MapView {
     user: Option<Position>,
     /// The map re-centres on each new position until the user moves it.
     following_user: bool,
+    /// Directions results, while shown.
+    routes: Option<RouteOverlay>,
 }
 
 impl MapView {
@@ -164,6 +187,7 @@ impl MapView {
             wanted: Vec::new(),
             user: None,
             following_user: true,
+            routes: None,
         };
 
         (map, tiles)
@@ -496,6 +520,29 @@ impl MapView {
     }
 
     /// Whether a place is selected or being looked up, for the place panel.
+    pub fn set_routes(&mut self, routes: Option<RouteOverlay>) {
+        self.routes = routes;
+    }
+
+    /// Frames every route option, beside the drawer; the map stops following the user.
+    pub fn fit_route(&mut self) {
+        let Some(routes) = &self.routes else {
+            return;
+        };
+        let Some((min, max)) = bounds(routes.itineraries.iter().flat_map(route_points)) else {
+            return;
+        };
+        let viewport = if self.viewport.width > 0.0 {
+            self.viewport
+        } else {
+            Size::new(DEFAULT_SPAN, DEFAULT_SPAN)
+        };
+
+        self.following_user = false;
+        self.camera = Camera::fitting(min, max, viewport, ROUTE_PADDING);
+        self.request_tiles();
+    }
+
     pub fn has_place(&self) -> bool {
         self.selected.is_some() || self.lookup.is_some()
     }
@@ -827,6 +874,10 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             draw_shape(&mut frame, &self.map.camera, shape, bounds.size(), accent);
         }
 
+        if let Some(routes) = &self.map.routes {
+            draw_routes(&mut frame, &self.map.camera, routes, bounds.size(), &self.map.palette, accent);
+        }
+
         // The area the user is in, under the POI markers.
         let user = self.map.user.map(|user| {
             let center = self
@@ -867,6 +918,16 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             );
         }
 
+        // Route stops above the POI markers, so they stay visible.
+        if let Some(itinerary) = self
+            .map
+            .routes
+            .as_ref()
+            .and_then(|routes| routes.itineraries.get(routes.chosen))
+        {
+            draw_route_stops(&mut frame, &self.map.camera, itinerary, bounds.size(), &self.map.palette, accent);
+        }
+
         if let Some((center, _)) = user {
             let dot = Path::circle(center, USER_DOT_RADIUS);
             frame.fill(&dot, USER_COLOR);
@@ -886,6 +947,122 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
         }
 
         vec![frame.into_geometry()]
+    }
+}
+
+/// Every point of a route: its paths and its stops.
+fn route_points(itinerary: &Itinerary) -> impl Iterator<Item = (f64, f64)> + '_ {
+    itinerary.legs.iter().flat_map(|leg| {
+        leg.path
+            .iter()
+            .copied()
+            .chain([leg.from.position, leg.to.position])
+            .chain(leg.stops.iter().map(|stop| stop.position))
+    })
+}
+
+/// The smallest box holding all `points`, or `None` if there are none.
+fn bounds(points: impl Iterator<Item = (f64, f64)>) -> Option<((f64, f64), (f64, f64))> {
+    points.fold(None, |bounds, (x, y)| {
+        let ((min_x, min_y), (max_x, max_y)) = bounds.unwrap_or(((x, y), (x, y)));
+        Some(((min_x.min(x), min_y.min(y)), (max_x.max(x), max_y.max(y))))
+    })
+}
+
+/// A leg's path on screen, or a straight line between its ends without one.
+fn leg_path(leg: &Leg, camera: &Camera, viewport: Size) -> Path {
+    let fallback = [leg.from.position, leg.to.position];
+    let points = if leg.path.is_empty() { &fallback[..] } else { &leg.path[..] };
+
+    Path::new(|builder| {
+        let mut points = points.iter().map(|point| camera.to_screen(*point, viewport));
+        if let Some(first) = points.next() {
+            builder.move_to(first);
+            for point in points {
+                builder.line_to(point);
+            }
+        }
+    })
+}
+
+fn round_stroke<'a>(color: Color, width: f32) -> canvas::Stroke<'a> {
+    canvas::Stroke::default()
+        .with_color(color)
+        .with_width(width)
+        .with_line_cap(canvas::LineCap::Round)
+        .with_line_join(canvas::LineJoin::Round)
+}
+
+/// The routes found: the others faint, then the chosen one on top, its walking
+/// parts dotted and its transit legs in their lines' colours.
+fn draw_routes(
+    frame: &mut Frame,
+    camera: &Camera,
+    routes: &RouteOverlay,
+    viewport: Size,
+    palette: &MapPalette,
+    accent: Color,
+) {
+    let faint = Color { a: 0.45, ..palette.poi_marker };
+    for (index, itinerary) in routes.itineraries.iter().enumerate() {
+        if index != routes.chosen {
+            for leg in &itinerary.legs {
+                frame.stroke(&leg_path(leg, camera, viewport), round_stroke(faint, FAINT_ROUTE_WIDTH));
+            }
+        }
+    }
+
+    let Some(chosen) = routes.itineraries.get(routes.chosen) else {
+        return;
+    };
+    for leg in &chosen.legs {
+        let path = leg_path(leg, camera, viewport);
+        let dots = canvas::LineDash {
+            segments: &WALK_DOTS,
+            offset: 0,
+        };
+        // An outline in the land colour keeps light line colours visible.
+        let outline = round_stroke(palette.land, ROUTE_WIDTH + 2.0 * ROUTE_OUTLINE);
+        if leg.is_walk() {
+            frame.stroke(&path, canvas::Stroke { line_dash: dots, ..outline });
+            frame.stroke(&path, canvas::Stroke { line_dash: dots, ..round_stroke(accent, ROUTE_WIDTH) });
+        } else {
+            let color = leg.line.as_ref().and_then(|line| line.color).unwrap_or(accent);
+            frame.stroke(&path, outline);
+            frame.stroke(&path, round_stroke(color, ROUTE_WIDTH));
+        }
+    }
+}
+
+/// Stops of the chosen route: those passed, where to board and get off, and the
+/// trip's start (hollow) and destination (filled).
+fn draw_route_stops(
+    frame: &mut Frame,
+    camera: &Camera,
+    itinerary: &Itinerary,
+    viewport: Size,
+    palette: &MapPalette,
+    accent: Color,
+) {
+    let dot = |frame: &mut Frame, position: (f64, f64), radius: f32, fill: Color, ring: Color| {
+        let circle = Path::circle(camera.to_screen(position, viewport), radius);
+        frame.fill(&circle, fill);
+        frame.stroke(&circle, canvas::Stroke::default().with_color(ring).with_width(2.0));
+    };
+
+    for leg in itinerary.legs.iter().filter(|leg| !leg.is_walk()) {
+        let color = leg.line.as_ref().and_then(|line| line.color).unwrap_or(accent);
+        for stop in &leg.stops {
+            dot(frame, stop.position, ROUTE_STOP_RADIUS, palette.land, color);
+        }
+        for end in [leg.from.position, leg.to.position] {
+            dot(frame, end, ROUTE_BOARD_RADIUS, Color::WHITE, color);
+        }
+    }
+
+    if let (Some(first), Some(last)) = (itinerary.legs.first(), itinerary.legs.last()) {
+        dot(frame, first.from.position, ROUTE_END_RADIUS, palette.land, accent);
+        dot(frame, last.to.position, ROUTE_END_RADIUS, accent, Color::WHITE);
     }
 }
 

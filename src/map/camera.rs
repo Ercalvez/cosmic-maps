@@ -60,6 +60,20 @@ impl Camera {
         }
     }
 
+    /// A camera showing the box from `min` to `max` (Web Mercator, spanning 0..1)
+    /// in `viewport`, leaving `padding` pixels on every side.
+    pub fn fitting(min: (f64, f64), max: (f64, f64), viewport: Size, padding: f32) -> Self {
+        let available = |span: f32| f64::from((span - 2.0 * padding).max(1.0));
+        let tile = f64::from(TILE_SIZE);
+        // Zoom at which each side fills the space; a point fits at any zoom.
+        let fit = |extent: f64, space: f64| (space / (extent * tile)).log2();
+        let zoom = fit(max.0 - min.0, available(viewport.width))
+            .min(fit(max.1 - min.1, available(viewport.height)))
+            .clamp(MIN_ZOOM, MAX_ZOOM);
+
+        Self::centered_on(((min.0 + max.0) / 2.0, (min.1 + max.1) / 2.0), zoom)
+    }
+
     /// Latitude and longitude of the center of the view.
     pub fn center_lat_lon(&self) -> (f64, f64) {
         let world = world_size(self.zoom);
@@ -200,4 +214,35 @@ pub fn lat_lon(position: (f64, f64)) -> (f64, f64) {
 
 fn world_size(zoom: f64) -> f64 {
     f64::from(TILE_SIZE) * 2f64.powf(zoom)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fitting_shows_the_whole_box() {
+        // Musée du Louvre to Gare de Lyon, Paris.
+        let (min, max) = (world_position(48.8606, 2.3376), world_position(48.8443, 2.3744));
+        let (min, max) = ((min.0.min(max.0), min.1.min(max.1)), (min.0.max(max.0), min.1.max(max.1)));
+        let viewport = Size::new(800.0, 600.0);
+        let camera = Camera::fitting(min, max, viewport, 40.0);
+
+        for corner in [min, max] {
+            let point = camera.to_screen(corner, viewport);
+            assert!((40.0 - 0.5..=760.0 + 0.5).contains(&point.x), "{point:?}");
+            assert!((40.0 - 0.5..=560.0 + 0.5).contains(&point.y), "{point:?}");
+        }
+        // The box fills one direction of the space.
+        let width = camera.to_screen(max, viewport).x - camera.to_screen(min, viewport).x;
+        let height = camera.to_screen(max, viewport).y - camera.to_screen(min, viewport).y;
+        assert!((width - 720.0).abs() < 1.0 || (height - 520.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn fitting_a_point_zooms_in_fully() {
+        let point = world_position(48.8606, 2.3376);
+        let camera = Camera::fitting(point, point, Size::new(800.0, 600.0), 40.0);
+        assert_eq!(camera.zoom(), MAX_ZOOM);
+    }
 }
