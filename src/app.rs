@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::config::Config;
-use crate::directions::Directions;
+use crate::directions::{Directions, RouteRequest};
 use crate::fl;
 use crate::map::details::{self, PoiDetails};
 use crate::map::location::{self, Position};
 use crate::map::style::MapPalette;
 use crate::map::poi::{OsmId, Poi};
+use crate::map::routing::{self, Plan};
 use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
 use crate::search_box::{SEARCH_DELAY, SearchBox, SearchTarget, Submit};
@@ -73,6 +74,10 @@ pub enum Message {
     DirectionsMode(segmented_button::Entity),
     DirectionsSwap,
     DirectionsBack,
+    /// Routes found for the directions form, for the search with this number.
+    RouteFound(u64, Result<Plan, routing::Error>),
+    /// Transit options leaving later (`true`) or earlier than those shown.
+    RoutePage(bool),
     Arrow(Arrow),
 }
 
@@ -253,12 +258,15 @@ impl cosmic::Application for AppModel {
                     widget::text::body(fl!("directions-back")),
                     widget::tooltip::Position::Bottom,
                 );
+                // The form stays in the header, above the scrolling results.
+                let directions = self.directions.as_ref()?;
                 context_drawer::context_drawer(
-                    self.directions.as_ref()?.view(),
+                    directions.results_view(),
                     Message::Map(MapEvent::ClosePanel),
                 )
                 .title(fl!("directions"))
                 .actions(back)
+                .header(directions.form_view())
             }
         })
     }
@@ -344,10 +352,12 @@ impl cosmic::Application for AppModel {
                 }
                 let changes_place = matches!(event, MapEvent::Click(_) | MapEvent::ClosePanel);
                 let action = self.map.on_event(event);
-                if changes_place {
-                    self.sync_place_drawer();
-                }
-                return self.run_map_action(action);
+                let route = if changes_place {
+                    self.sync_place_drawer()
+                } else {
+                    Task::none()
+                };
+                return Task::batch([route, self.run_map_action(action)]);
             }
 
             Message::SearchActivate => {
@@ -368,12 +378,16 @@ impl cosmic::Application for AppModel {
                         .as_mut()
                         .and_then(|directions| directions.on_input(target, text)),
                 };
+                // A typed start or destination is unset until picked: clear the routes.
+                let route = self.request_route();
                 if let Some(query) = query {
-                    return cosmic::task::future(async move {
+                    let search = cosmic::task::future(async move {
                         tokio::time::sleep(SEARCH_DELAY).await;
                         Message::SearchDebounced(target, query)
                     });
+                    return Task::batch([route, search]);
                 }
+                return route;
             }
 
             Message::SearchDebounced(target, query) => {
@@ -423,13 +437,14 @@ impl cosmic::Application for AppModel {
                 match target {
                     SearchTarget::Header => {
                         let action = self.map.show_place(result.poi);
-                        self.sync_place_drawer();
-                        return self.run_map_action(action);
+                        let route = self.sync_place_drawer();
+                        return Task::batch([route, self.run_map_action(action)]);
                     }
                     SearchTarget::From | SearchTarget::To => {
                         if let Some(directions) = &mut self.directions {
                             directions.pick(target, result.poi);
                         }
+                        return self.request_route();
                     }
                 }
             }
@@ -438,11 +453,29 @@ impl cosmic::Application for AppModel {
                 if let Some(directions) = &mut self.directions {
                     directions.select_mode(mode);
                 }
+                return self.request_route();
             }
 
             Message::DirectionsSwap => {
                 if let Some(directions) = &mut self.directions {
                     directions.swap();
+                }
+                return self.request_route();
+            }
+
+            Message::RouteFound(id, result) => {
+                if let Some(directions) = &mut self.directions {
+                    directions.insert_route(id, result);
+                }
+            }
+
+            Message::RoutePage(later) => {
+                if let Some(request) = self
+                    .directions
+                    .as_mut()
+                    .and_then(|directions| directions.page_request(later))
+                {
+                    return Self::find_route(request);
                 }
             }
 
@@ -484,8 +517,10 @@ impl cosmic::Application for AppModel {
 
             Message::Location(Ok(position)) => {
                 self.map.set_position(position);
-                if let Some(directions) = &mut self.directions {
-                    directions.user_position_known(position);
+                if let Some(directions) = &mut self.directions
+                    && directions.user_position_known(position)
+                {
+                    return self.request_route();
                 }
             }
 
@@ -495,7 +530,7 @@ impl cosmic::Application for AppModel {
 
             Message::Reverse(request, result) => {
                 self.map.insert_reverse(request, result);
-                self.sync_place_drawer();
+                return self.sync_place_drawer();
             }
 
             Message::TileReady(tile) => {
@@ -532,13 +567,13 @@ impl AppModel {
     /// Shows the place drawer while a place is selected, and hides it otherwise.
     /// Called when the selection may have changed, so that panning or the About
     /// drawer do not bring it back. While the directions form is open, a newly
-    /// selected place becomes its destination instead.
-    fn sync_place_drawer(&mut self) {
+    /// selected place becomes its destination instead, and routes are searched.
+    fn sync_place_drawer(&mut self) -> Task<cosmic::Action<Message>> {
         if let Some(directions) = &mut self.directions {
             if let Some(place) = self.map.selected() {
                 directions.set_destination(place.clone());
             }
-            return;
+            return self.request_route();
         }
 
         if self.map.has_place() {
@@ -547,6 +582,23 @@ impl AppModel {
         } else if self.context_page == ContextPage::Place {
             self.core.window.show_context = false;
         }
+        Task::none()
+    }
+
+    /// Updates the directions' routes after a change to the form, searching when
+    /// the trip changed.
+    fn request_route(&mut self) -> Task<cosmic::Action<Message>> {
+        match self.directions.as_mut().and_then(Directions::route_request) {
+            Some(request) => Self::find_route(request),
+            None => Task::none(),
+        }
+    }
+
+    fn find_route(request: RouteRequest) -> Task<cosmic::Action<Message>> {
+        cosmic::task::future(async move {
+            let result = routing::plan(request.from, request.to, request.mode, request.page).await;
+            Message::RouteFound(request.id, result)
+        })
     }
 
     /// Opens the directions form, from the user's position to the selected place.
@@ -578,7 +630,7 @@ impl AppModel {
             }
             Some(MapAction::OpenDirections) => {
                 self.open_directions();
-                Task::none()
+                self.request_route()
             }
             None => Task::none(),
         }

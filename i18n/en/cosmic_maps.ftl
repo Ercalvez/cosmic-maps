@@ -21,6 +21,24 @@ travel-mode-bike = Bike
 travel-mode-transit = Transit
 travel-mode-car = Car
 
+## Routes
+
+route-loading = Finding routes…
+route-not-found = No route found.
+route-failed = Could not find routes. Check your connection.
+route-unavailable = Routes for this mode are not available yet.
+route-earlier = Earlier
+route-later = Later
+route-minutes = { $minutes } min
+route-hours = { $hours } h { $minutes }
+route-meters = { $meters } m
+route-kilometers = { $kilometers } km
+transit-metro = Metro
+transit-bus = Bus
+transit-tram = Tram
+transit-train = Train
+transit-ferry = Ferry
+
 ## POI details
 
 poi-details-loading = Loading details…

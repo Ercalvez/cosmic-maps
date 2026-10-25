@@ -21,6 +21,8 @@ geozero = { version = "0.13.0", default-features = false, features = ["with-mvt"
 # Already used by maplibre; listed to fetch POI details from Nominatim.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
 serde = { version = "1", features = ["derive"] }
+# Already used by maplibre; reads route times and shows them in local time.
+jiff = { version = "0.2", features = ["serde"] }
 
 [dev-dependencies]
 serde_json = "1"

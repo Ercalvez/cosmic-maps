@@ -5,15 +5,18 @@
 //! `User-Agent` with a contact, with visible attribution of transitous.org/sources
 //! and OpenStreetMap. Maintainers ask to be contacted before heavy `/plan` use.
 
-#![expect(dead_code, reason = "used by the directions form from phase 2")]
+#![expect(dead_code, reason = "steps, line colours and paths are shown in later phases")]
 
 use std::time::Duration;
 
 use cosmic::iced::Color;
+use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::camera::world_position;
-use super::http::{CLIENT, Error, RateLimit};
+use super::http::{CLIENT, RateLimit};
+
+pub use super::http::Error;
 
 const PLAN_URL: &str = "https://api.transitous.org/api/v6/plan";
 /// Transitous gives no numbers; plans are only requested on user actions, so one
@@ -33,15 +36,27 @@ pub struct Plan {
     pub walk: Option<Itinerary>,
     /// Public transit options, empty for walking requests.
     pub transit: Vec<Itinerary>,
+    /// Cursors for transit options leaving earlier or later, passed back to [`plan`].
+    pub earlier: Option<String>,
+    pub later: Option<String>,
+}
+
+impl Plan {
+    /// Whether nothing was found for `mode`.
+    pub fn is_empty(&self, mode: RouteMode) -> bool {
+        match mode {
+            RouteMode::Walk => self.walk.is_none(),
+            RouteMode::Transit => self.walk.is_none() && self.transit.is_empty(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Itinerary {
     /// In seconds.
     pub duration: u64,
-    /// Departure and arrival, in UTC as ISO 8601, such as `2026-10-25T14:54:00Z`.
-    pub start_time: String,
-    pub end_time: String,
+    pub start_time: Timestamp,
+    pub end_time: Timestamp,
     pub transfers: u32,
     pub legs: Vec<Leg>,
 }
@@ -52,8 +67,8 @@ pub struct Leg {
     pub mode: String,
     pub from: Stop,
     pub to: Stop,
-    pub start_time: String,
-    pub end_time: String,
+    pub start_time: Timestamp,
+    pub end_time: Timestamp,
     /// In seconds.
     pub duration: u64,
     /// In meters, for walking legs.
@@ -102,8 +117,14 @@ pub struct Step {
     pub distance: f64,
 }
 
-/// Routes from `from` to `to`, both latitude and longitude, leaving now.
-pub async fn plan(from: (f64, f64), to: (f64, f64), mode: RouteMode) -> Result<Plan, Error> {
+/// Routes from `from` to `to`, both latitude and longitude, leaving now, or the
+/// earlier or later page given by a cursor from a previous [`Plan`].
+pub async fn plan(
+    from: (f64, f64),
+    to: (f64, f64),
+    mode: RouteMode,
+    page: Option<String>,
+) -> Result<Plan, Error> {
     TRANSITOUS.wait_turn().await;
 
     let from = format!("{},{}", from.0, from.1);
@@ -113,14 +134,18 @@ pub async fn plan(from: (f64, f64), to: (f64, f64), mode: RouteMode) -> Result<P
         RouteMode::Walk => "",
         RouteMode::Transit => "TRANSIT",
     };
+    let mut query = vec![
+        ("fromPlace", from.as_str()),
+        ("toPlace", to.as_str()),
+        ("directModes", "WALK"),
+        ("transitModes", transit_modes),
+    ];
+    if let Some(page) = &page {
+        query.push(("pageCursor", page.as_str()));
+    }
     let response: Response = CLIENT
         .get(PLAN_URL)
-        .query(&[
-            ("fromPlace", from.as_str()),
-            ("toPlace", to.as_str()),
-            ("directModes", "WALK"),
-            ("transitModes", transit_modes),
-        ])
+        .query(&query)
         .send()
         .await?
         .error_for_status()?
@@ -132,19 +157,22 @@ pub async fn plan(from: (f64, f64), to: (f64, f64), mode: RouteMode) -> Result<P
 
 /// The parts of a MOTIS `/api/v6/plan` response that are used.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Response {
     #[serde(default)]
     direct: Vec<RawItinerary>,
     #[serde(default)]
     itineraries: Vec<RawItinerary>,
+    previous_page_cursor: Option<String>,
+    next_page_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawItinerary {
     duration: u64,
-    start_time: String,
-    end_time: String,
+    start_time: Timestamp,
+    end_time: Timestamp,
     #[serde(default)]
     transfers: u32,
     legs: Vec<RawLeg>,
@@ -156,8 +184,8 @@ struct RawLeg {
     mode: String,
     from: RawPlace,
     to: RawPlace,
-    start_time: String,
-    end_time: String,
+    start_time: Timestamp,
+    end_time: Timestamp,
     duration: u64,
     distance: Option<f64>,
     route_short_name: Option<String>,
@@ -201,6 +229,8 @@ impl Response {
                 .into_iter()
                 .map(RawItinerary::into_itinerary)
                 .collect(),
+            earlier: self.previous_page_cursor,
+            later: self.next_page_cursor,
         }
     }
 }
@@ -359,13 +389,19 @@ mod tests {
                     "headsign": "Château de Vincennes", "agencyName": "RATP",
                     "legGeometry": {"points": "_p~iF~ps|U_ulLnnqC_mqNvxq`@", "precision": 5, "length": 3}
                 }]
-            }]
+            }],
+            "previousPageCursor": "EARLIER|1792940160",
+            "nextPageCursor": "LATER|1792940820"
         }"#;
 
         let plan = serde_json::from_str::<Response>(json).unwrap().into_plan();
 
+        assert!(!plan.is_empty(RouteMode::Transit));
+        assert_eq!(plan.later.as_deref(), Some("LATER|1792940820"));
+
         let walk = plan.walk.unwrap();
         assert_eq!(walk.duration, 1159);
+        assert_eq!(walk.start_time, "2026-10-25T14:56:00Z".parse::<Timestamp>().unwrap());
         let leg = &walk.legs[0];
         assert!(leg.is_walk());
         assert_eq!(leg.distance, Some(1358.0));
@@ -391,5 +427,6 @@ mod tests {
             .into_plan();
 
         assert_eq!(plan, Plan::default());
+        assert!(plan.is_empty(RouteMode::Walk) && plan.is_empty(RouteMode::Transit));
     }
 }

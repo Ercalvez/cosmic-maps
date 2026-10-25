@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! The directions form: transport mode, start and destination. No route is
-//! computed yet.
+//! The directions form: transport mode, start and destination, and the routes
+//! found between them.
 
+use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon, segmented_button};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use crate::app::Message;
 use crate::fl;
+use crate::map::camera::lat_lon;
 use crate::map::location::Position;
 use crate::map::poi::Poi;
+use crate::map::routing::{self, Itinerary, Plan, RouteMode};
 use crate::search_box::{SearchBox, SearchTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,15 +49,66 @@ impl TravelMode {
         handle.symbolic = true;
         handle.icon()
     }
+
+    /// How routes are found for this mode, or `None` when not supported yet.
+    fn route_mode(self) -> Option<RouteMode> {
+        match self {
+            Self::Foot => Some(RouteMode::Walk),
+            Self::Transit => Some(RouteMode::Transit),
+            Self::Bike | Self::Car => None,
+        }
+    }
 }
 
 /// One end of the trip.
 #[derive(Debug, Clone)]
 pub enum Endpoint {
     Unset,
-    #[expect(dead_code, reason = "read once routes are computed")]
     UserLocation(Position),
     Place(Poi),
+}
+
+impl Endpoint {
+    fn lat_lon(&self) -> Option<(f64, f64)> {
+        match self {
+            Self::Unset => None,
+            Self::UserLocation(position) => Some((position.latitude, position.longitude)),
+            Self::Place(poi) => Some(lat_lon(poi.position)),
+        }
+    }
+}
+
+/// What is known about routes for the current form.
+#[derive(Debug, Clone)]
+pub enum RouteState {
+    /// The start or destination is missing.
+    Idle,
+    /// The selected mode cannot be routed yet.
+    Unavailable,
+    Loading,
+    Found(Plan),
+    NotFound,
+    Failed,
+}
+
+/// The trip a route request is for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RouteQuery {
+    from: (f64, f64),
+    to: (f64, f64),
+    mode: RouteMode,
+}
+
+/// A route search to run with [`routing::plan`], then pass to
+/// [`Directions::insert_route`].
+#[derive(Debug, Clone)]
+pub struct RouteRequest {
+    pub id: u64,
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+    pub mode: RouteMode,
+    /// Earlier or later options, as a cursor from a previous plan.
+    pub page: Option<String>,
 }
 
 pub struct Directions {
@@ -63,6 +119,11 @@ pub struct Directions {
     from_edited: bool,
     from_search: SearchBox,
     to_search: SearchBox,
+    route: RouteState,
+    /// The trip shown or being searched, so an unchanged form is not searched again.
+    query: Option<RouteQuery>,
+    /// Number of the latest request: answers to older ones are stale.
+    latest_request: u64,
 }
 
 impl Directions {
@@ -83,6 +144,9 @@ impl Directions {
             from_edited: false,
             from_search: SearchBox::default(),
             to_search: SearchBox::default(),
+            route: RouteState::Idle,
+            query: None,
+            latest_request: 0,
         };
         if let Some(position) = user {
             directions.set(SearchTarget::From, Endpoint::UserLocation(position));
@@ -95,16 +159,27 @@ impl Directions {
         self.modes.activate(mode);
     }
 
+    fn mode(&self) -> TravelMode {
+        self.modes
+            .active_data::<TravelMode>()
+            .copied()
+            .unwrap_or(TravelMode::Foot)
+    }
+
     /// The user's position became known. It becomes the start unless the user
-    /// already chose or cleared one.
-    pub fn user_position_known(&mut self, position: Position) {
+    /// already chose or cleared one. Returns whether the start changed this way.
+    pub fn user_position_known(&mut self, position: Position) -> bool {
         match self.from {
             Endpoint::Unset if !self.from_edited => {
                 self.set(SearchTarget::From, Endpoint::UserLocation(position));
+                true
             }
-            // Keep following the user while the start is their location.
-            Endpoint::UserLocation(_) => self.from = Endpoint::UserLocation(position),
-            _ => {}
+            // Keep the latest position, without searching again for every move.
+            Endpoint::UserLocation(_) => {
+                self.from = Endpoint::UserLocation(position);
+                false
+            }
+            _ => false,
         }
     }
 
@@ -161,6 +236,68 @@ impl Directions {
         self.to_search.hide_results();
     }
 
+    /// Updates the routes after a change to the form. Returns the search to run
+    /// when the trip changed and can be routed.
+    pub fn route_request(&mut self) -> Option<RouteRequest> {
+        let Some(mode) = self.mode().route_mode() else {
+            self.query = None;
+            self.route = RouteState::Unavailable;
+            return None;
+        };
+        let (Some(from), Some(to)) = (self.from.lat_lon(), self.to.lat_lon()) else {
+            self.query = None;
+            self.route = RouteState::Idle;
+            return None;
+        };
+
+        let query = RouteQuery { from, to, mode };
+        if self.query == Some(query) {
+            return None;
+        }
+        self.query = Some(query);
+        Some(self.start(query, None))
+    }
+
+    /// The search for transit options leaving earlier or later than those shown.
+    pub fn page_request(&mut self, later: bool) -> Option<RouteRequest> {
+        let RouteState::Found(plan) = &self.route else {
+            return None;
+        };
+        let cursor = if later { plan.later.clone() } else { plan.earlier.clone() }?;
+        let query = self.query?;
+        Some(self.start(query, Some(cursor)))
+    }
+
+    /// Stores the answer to a search, unless a newer one was started since.
+    pub fn insert_route(&mut self, id: u64, result: Result<Plan, routing::Error>) {
+        if id != self.latest_request {
+            return;
+        }
+        let Some(query) = self.query else {
+            return;
+        };
+        self.route = match result {
+            Ok(plan) if plan.is_empty(query.mode) => RouteState::NotFound,
+            Ok(plan) => RouteState::Found(plan),
+            Err(err) => {
+                eprintln!("failed to find routes: {err:?}");
+                RouteState::Failed
+            }
+        };
+    }
+
+    fn start(&mut self, query: RouteQuery, page: Option<String>) -> RouteRequest {
+        self.latest_request += 1;
+        self.route = RouteState::Loading;
+        RouteRequest {
+            id: self.latest_request,
+            from: query.from,
+            to: query.to,
+            mode: query.mode,
+            page,
+        }
+    }
+
     /// Sets a field's place and shows its name in the field.
     fn set(&mut self, target: SearchTarget, endpoint: Endpoint) {
         let name = match &endpoint {
@@ -178,7 +315,9 @@ impl Directions {
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    /// The form, kept above the scrolling results: modes, start and destination,
+    /// and earlier/later buttons for transit.
+    pub fn form_view(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
 
         let modes = widget::segmented_control::horizontal(&self.modes)
@@ -191,7 +330,8 @@ impl Directions {
             widget::tooltip::Position::Bottom,
         );
 
-        widget::column::with_capacity(4)
+        widget::column::with_capacity(5)
+            .width(Length::Fill)
             .push(modes)
             .push(field(
                 SearchTarget::From,
@@ -206,8 +346,128 @@ impl Directions {
                 fl!("directions-choose-destination"),
                 &self.to_search,
             ))
+            .push_maybe(self.pages_view())
             .spacing(spacing.space_s)
             .into()
+    }
+
+    /// Earlier and later transit options, when routes were found by transit.
+    fn pages_view(&self) -> Option<Element<'_, Message>> {
+        let RouteState::Found(plan) = &self.route else {
+            return None;
+        };
+        let is_transit = self.query.is_some_and(|query| query.mode == RouteMode::Transit);
+        if !is_transit || plan.transit.is_empty() {
+            return None;
+        }
+
+        let pages = widget::row::with_capacity(3)
+            .push(
+                widget::button::text(fl!("route-earlier"))
+                    .on_press_maybe(plan.earlier.is_some().then_some(Message::RoutePage(false))),
+            )
+            .push(widget::space::horizontal())
+            .push(
+                widget::button::text(fl!("route-later"))
+                    .on_press_maybe(plan.later.is_some().then_some(Message::RoutePage(true))),
+            );
+        Some(pages.into())
+    }
+
+    /// The routes found, or the search's status: the part that scrolls. A plain
+    /// summary; the full itinerary view comes later.
+    pub fn results_view(&self) -> Element<'_, Message> {
+        let status = |text: String| widget::text::caption(text).into();
+        let plan = match &self.route {
+            RouteState::Idle => return widget::column::with_capacity(0).into(),
+            RouteState::Unavailable => return status(fl!("route-unavailable")),
+            RouteState::Loading => return status(fl!("route-loading")),
+            RouteState::NotFound => return status(fl!("route-not-found")),
+            RouteState::Failed => return status(fl!("route-failed")),
+            RouteState::Found(plan) => plan,
+        };
+
+        let mut rows = widget::column::with_capacity(plan.transit.len() + 1)
+            .spacing(cosmic::theme::spacing().space_xxs);
+        if let Some(walk) = &plan.walk {
+            rows = rows.push(widget::text::body(walk_summary(walk)));
+        }
+        for itinerary in &plan.transit {
+            rows = rows.push(widget::text::body(transit_summary(itinerary)));
+        }
+
+        rows.into()
+    }
+}
+
+/// "Walk · 19 min · 1.4 km".
+fn walk_summary(walk: &Itinerary) -> String {
+    let distance: f64 = walk.legs.iter().filter_map(|leg| leg.distance).sum();
+    [fl!("travel-mode-foot"), format_duration(walk.duration), format_distance(distance)].join(" · ")
+}
+
+/// "15:01 → 15:11 · 10 min · Metro 1".
+fn transit_summary(itinerary: &Itinerary) -> String {
+    let lines: Vec<String> = itinerary
+        .legs
+        .iter()
+        .filter_map(|leg| {
+            let line = leg.line.as_ref()?;
+            let name = line.name.clone().unwrap_or_default();
+            Some(match transit_kind(&leg.mode) {
+                Some(kind) => format!("{kind} {name}").trim_end().to_owned(),
+                None => name,
+            })
+        })
+        .collect();
+
+    let times = format!(
+        "{} → {}",
+        format_time(itinerary.start_time),
+        format_time(itinerary.end_time)
+    );
+    [times, format_duration(itinerary.duration), lines.join(" › ")].join(" · ")
+}
+
+/// The kind of vehicle of a MOTIS mode, or `None` if the line name says enough.
+fn transit_kind(mode: &str) -> Option<String> {
+    Some(match mode {
+        "SUBWAY" | "METRO" => fl!("transit-metro"),
+        "BUS" | "COACH" => fl!("transit-bus"),
+        "TRAM" => fl!("transit-tram"),
+        "FERRY" => fl!("transit-ferry"),
+        "RAIL" | "HIGHSPEED_RAIL" | "LONG_DISTANCE" | "NIGHT_RAIL" | "REGIONAL_FAST_RAIL"
+        | "REGIONAL_RAIL" | "SUBURBAN" => fl!("transit-train"),
+        _ => return None,
+    })
+}
+
+/// Local time, such as "15:01".
+fn format_time(time: Timestamp) -> String {
+    time.to_zoned(TimeZone::system()).strftime("%H:%M").to_string()
+}
+
+/// "10 min", or "1 h 05" from an hour.
+fn format_duration(seconds: u64) -> String {
+    let minutes = seconds.div_ceil(60);
+    if minutes < 60 {
+        fl!("route-minutes", minutes = minutes)
+    } else {
+        let hours = minutes / 60;
+        let minutes = format!("{:02}", minutes % 60);
+        fl!("route-hours", hours = hours, minutes = minutes)
+    }
+}
+
+/// "850 m", or "1.4 km" from a kilometre.
+fn format_distance(meters: f64) -> String {
+    if meters < 1000.0 {
+        // To the nearest 10 m: walking distances are estimates.
+        let meters = ((meters / 10.0).round() * 10.0) as u64;
+        fl!("route-meters", meters = meters)
+    } else {
+        let kilometers = format!("{:.1}", meters / 1000.0);
+        fl!("route-kilometers", kilometers = kilometers)
     }
 }
 
@@ -249,47 +509,105 @@ mod tests {
         }
     }
 
+    /// Near the Musée du Louvre, Paris.
     fn here() -> Position {
         Position {
-            latitude: 48.39,
-            longitude: -4.48,
+            latitude: 48.8606,
+            longitude: 2.3376,
             accuracy: 50.0,
         }
     }
 
+    fn select(directions: &mut Directions, mode: TravelMode) {
+        let entity = directions
+            .modes
+            .iter()
+            .find(|&entity| directions.modes.data::<TravelMode>(entity) == Some(&mode))
+            .unwrap();
+        directions.select_mode(entity);
+    }
+
     #[test]
     fn defaults_with_and_without_location() {
-        let directions = Directions::new(&place("Hôtel Oceania"), Some(here()));
+        let directions = Directions::new(&place("Hôtel de Ville"), Some(here()));
         assert!(matches!(directions.from, Endpoint::UserLocation(_)));
         assert_eq!(directions.from_search.input, fl!("your-location"));
-        assert!(matches!(&directions.to, Endpoint::Place(poi) if poi.name == "Hôtel Oceania"));
-        assert_eq!(directions.to_search.input, "Hôtel Oceania");
+        assert!(matches!(&directions.to, Endpoint::Place(poi) if poi.name == "Hôtel de Ville"));
+        assert_eq!(directions.to_search.input, "Hôtel de Ville");
 
-        let directions = Directions::new(&place("Hôtel Oceania"), None);
+        let directions = Directions::new(&place("Hôtel de Ville"), None);
         assert!(matches!(directions.from, Endpoint::Unset));
         assert!(directions.from_search.input.is_empty());
     }
 
     #[test]
     fn location_fills_an_untouched_empty_start_only() {
-        let mut directions = Directions::new(&place("Port"), None);
-        directions.user_position_known(here());
+        let mut directions = Directions::new(&place("Gare de Lyon"), None);
+        assert!(directions.user_position_known(here()));
         assert!(matches!(directions.from, Endpoint::UserLocation(_)));
+        // Later positions update the start without asking for a new search.
+        assert!(!directions.user_position_known(here()));
 
-        let mut directions = Directions::new(&place("Port"), None);
-        directions.on_input(SearchTarget::From, "Gare".to_owned());
+        let mut directions = Directions::new(&place("Gare de Lyon"), None);
+        directions.on_input(SearchTarget::From, "Châtelet".to_owned());
         directions.on_input(SearchTarget::From, String::new());
-        directions.user_position_known(here());
+        assert!(!directions.user_position_known(here()));
         assert!(matches!(directions.from, Endpoint::Unset));
     }
 
     #[test]
     fn swap_exchanges_places_and_texts() {
-        let mut directions = Directions::new(&place("Port"), Some(here()));
+        let mut directions = Directions::new(&place("Gare de Lyon"), Some(here()));
         directions.swap();
-        assert!(matches!(&directions.from, Endpoint::Place(poi) if poi.name == "Port"));
+        assert!(matches!(&directions.from, Endpoint::Place(poi) if poi.name == "Gare de Lyon"));
         assert!(matches!(directions.to, Endpoint::UserLocation(_)));
-        assert_eq!(directions.from_search.input, "Port");
+        assert_eq!(directions.from_search.input, "Gare de Lyon");
         assert_eq!(directions.to_search.input, fl!("your-location"));
+    }
+
+    #[test]
+    fn requests_follow_the_form() {
+        let mut directions = Directions::new(&place("Hôtel de Ville"), None);
+        // No start yet.
+        assert!(directions.route_request().is_none());
+        assert!(matches!(directions.route, RouteState::Idle));
+
+        directions.user_position_known(here());
+        let first = directions.route_request().unwrap();
+        assert_eq!(first.mode, RouteMode::Walk);
+        assert!(matches!(directions.route, RouteState::Loading));
+        // An unchanged form is not searched again.
+        assert!(directions.route_request().is_none());
+
+        select(&mut directions, TravelMode::Transit);
+        let second = directions.route_request().unwrap();
+        assert_eq!(second.mode, RouteMode::Transit);
+        assert!(second.id > first.id);
+
+        select(&mut directions, TravelMode::Bike);
+        assert!(directions.route_request().is_none());
+        assert!(matches!(directions.route, RouteState::Unavailable));
+    }
+
+    #[test]
+    fn stale_answers_are_dropped() {
+        let mut directions = Directions::new(&place("Hôtel de Ville"), Some(here()));
+        let first = directions.route_request().unwrap();
+        select(&mut directions, TravelMode::Transit);
+        let second = directions.route_request().unwrap();
+
+        directions.insert_route(first.id, Ok(Plan::default()));
+        assert!(matches!(directions.route, RouteState::Loading));
+
+        directions.insert_route(second.id, Ok(Plan::default()));
+        assert!(matches!(directions.route, RouteState::NotFound));
+    }
+
+    #[test]
+    fn durations_and_distances() {
+        assert_eq!(format_duration(600), fl!("route-minutes", minutes = 10));
+        assert_eq!(format_duration(3900), fl!("route-hours", hours = 1, minutes = "05"));
+        assert_eq!(format_distance(847.0), fl!("route-meters", meters = 850));
+        assert_eq!(format_distance(1358.0), fl!("route-kilometers", kilometers = "1.4"));
     }
 }

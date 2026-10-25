@@ -1226,6 +1226,7 @@ dependencies = [
  "geozero",
  "i18n-embed",
  "i18n-embed-fl",
+ "jiff",
  "libcosmic",
  "maplibre",
  "open",
