@@ -21,7 +21,7 @@ static LANGUAGES: LazyLock<String> = LazyLock::new(|| system_languages().join(",
 /// Simplification of the shapes Nominatim returns, in degrees (about 5 m): keeps
 /// buildings recognizable while making city outlines several times lighter.
 const SHAPE_SIMPLIFICATION: &str = "0.00005";
-/// Countries writing the house number before the street, such as "10 Rue Malakoff".
+/// Countries writing the house number before the street, such as "10 Rue de Rivoli".
 const NUMBER_FIRST_COUNTRIES: [&str; 9] = ["au", "ca", "fr", "gb", "ie", "lu", "nz", "us", "za"];
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -346,24 +346,24 @@ mod tests {
 
     #[test]
     fn parses_reverse_address() {
-        // Trimmed `/reverse` response for 10 Rue Malakoff, Brest.
+        // Trimmed `/reverse` response for 10 Rue de Rivoli, Paris.
         let json = r#"{
             "osm_type": "node",
-            "osm_id": 1693005227,
-            "lat": "48.3960198",
-            "lon": "-4.4834467",
+            "osm_id": 703432291,
+            "lat": "48.8554814",
+            "lon": "2.3604077",
             "category": "place",
             "type": "house",
             "name": "",
             "address": {
                 "house_number": "10",
-                "road": "Rue Malakoff",
-                "city": "Brest",
-                "postcode": "29200",
+                "road": "Rue de Rivoli",
+                "city": "Paris",
+                "postcode": "75004",
                 "country": "France",
                 "country_code": "fr"
             },
-            "extratags": {}
+            "extratags": {"entrance": "yes"}
         }"#;
 
         let ReverseResponse::Found(place) = serde_json::from_str(json).unwrap() else {
@@ -371,10 +371,10 @@ mod tests {
         };
         let (poi, details) = place.into_poi().unwrap();
 
-        assert_eq!(poi.name, "10 Rue Malakoff");
-        assert_eq!(poi.osm_id, Some(OsmId::Node(1693005227)));
+        assert_eq!(poi.name, "10 Rue de Rivoli");
+        assert_eq!(poi.osm_id, Some(OsmId::Node(703432291)));
         assert_eq!(poi.subclass.as_deref(), Some("house"));
-        assert_eq!(details.address.as_deref(), Some("10 Rue Malakoff, 29200 Brest"));
+        assert_eq!(details.address.as_deref(), Some("10 Rue de Rivoli, 75004 Paris"));
     }
 
     #[test]
