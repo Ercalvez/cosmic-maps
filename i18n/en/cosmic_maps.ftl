@@ -48,8 +48,8 @@ route-transfers = { $count ->
 }
 route-leg-walk = Walk { $distance } to { $place }
 route-leg-towards = towards { $headsign }
-route-leg-board = Board at { $stop } · { $time }
-route-leg-alight = Get off at { $stop } · { $time }
+route-leg-board = Board at { $stop }
+route-leg-alight = Get off at { $stop }
 route-leg-stops = { $count ->
     [0] No stops in between
     [one] 1 stop
