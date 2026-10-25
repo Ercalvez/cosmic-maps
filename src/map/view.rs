@@ -35,6 +35,8 @@ const POI_MARKER: Color = Color::from_rgb(0.33, 0.33, 0.38);
 /// Farthest a click may land from a POI marker, in pixels, to select it.
 const POI_HIT_RADIUS: f32 = 10.0;
 const MARKER_RADIUS: f32 = 6.0;
+/// Zoom used to show a place picked from search, high enough for POI markers.
+const PLACE_ZOOM: f64 = 16.0;
 /// Gap between the selected POI and the corner of its popover.
 const POPOVER_OFFSET: f32 = 8.0;
 /// Keeps long addresses and opening hours from making the popover too wide.
@@ -133,6 +135,19 @@ impl MapView {
 
         self.request_tiles();
         action
+    }
+
+    /// Centers the map on `poi` and opens its popover, such as for a search result.
+    pub fn show_place(&mut self, poi: Poi) -> Option<MapAction> {
+        self.camera = Camera::centered_on(poi.position, PLACE_ZOOM);
+        self.selected = Some(poi);
+        self.request_tiles();
+        self.request_details()
+    }
+
+    /// Latitude and longitude of the center of the map.
+    pub fn center(&self) -> (f64, f64) {
+        self.camera.center_lat_lon()
     }
 
     pub fn insert_details(&mut self, osm_id: OsmId, result: Result<PoiDetails, details::Error>) {

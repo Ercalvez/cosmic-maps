@@ -5,34 +5,17 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::sync::Mutex;
-use tokio::time::Instant;
 
+use super::http::{CLIENT, RateLimit};
 use super::poi::{OsmId, system_languages};
+
+pub use super::http::Error;
 
 const LOOKUP_URL: &str = "https://nominatim.openstreetmap.org/lookup";
 /// Nominatim's usage policy allows at most one request per second.
-const MIN_INTERVAL: Duration = Duration::from_secs(1);
-/// Nominatim's usage policy requires requests to identify the application.
-const USER_AGENT: &str = concat!(
-    env!("CARGO_PKG_NAME"),
-    "/",
-    env!("CARGO_PKG_VERSION"),
-    " (+",
-    env!("CARGO_PKG_REPOSITORY"),
-    ")"
-);
-
-static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .expect("failed to create HTTP client")
-});
+static NOMINATIM: RateLimit = RateLimit::new(Duration::from_secs(1));
 /// Languages for addresses, such as "fr,en".
 static LANGUAGES: LazyLock<String> = LazyLock::new(|| system_languages().join(","));
-/// When the last request was sent, to space requests out.
-static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::const_new(None);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PoiDetails {
@@ -52,21 +35,8 @@ pub enum Wheelchair {
     No,
 }
 
-#[derive(Debug, Clone)]
-pub enum Error {
-    Network(String),
-    /// Nominatim does not know the object.
-    NotFound,
-}
-
-impl From<reqwest::Error> for Error {
-    fn from(err: reqwest::Error) -> Self {
-        Self::Network(err.to_string())
-    }
-}
-
 pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
-    wait_turn().await;
+    NOMINATIM.wait_turn().await;
 
     let id = match osm_id {
         OsmId::Node(id) => format!("N{id}"),
@@ -92,16 +62,6 @@ pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
         .next()
         .map(PoiDetails::from)
         .ok_or(Error::NotFound)
-}
-
-/// Waits until a request may be sent. The lock is held while waiting, so
-/// concurrent requests go out one per interval.
-async fn wait_turn() {
-    let mut last_request = LAST_REQUEST.lock().await;
-    if let Some(last) = *last_request {
-        tokio::time::sleep_until(last + MIN_INTERVAL).await;
-    }
-    *last_request = Some(Instant::now());
 }
 
 /// The parts of a Nominatim `jsonv2` result that are used.
@@ -140,7 +100,7 @@ impl Address {
 }
 
 /// Joins the present parts, or returns `None` if there are none.
-fn join<const N: usize>(parts: [Option<String>; N], separator: &str) -> Option<String> {
+pub(super) fn join<const N: usize>(parts: [Option<String>; N], separator: &str) -> Option<String> {
     let parts: Vec<String> = parts.into_iter().flatten().collect();
     (!parts.is_empty()).then(|| parts.join(separator))
 }

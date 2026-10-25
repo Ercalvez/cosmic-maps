@@ -44,15 +44,26 @@ pub struct Camera {
 
 impl Camera {
     pub fn from_lat_lon(lat: f64, lon: f64, zoom: f64) -> Self {
+        Self::centered_on(world_position(lat, lon), zoom)
+    }
+
+    /// A camera showing `position`, in Web Mercator coordinates spanning 0..1.
+    pub fn centered_on(position: (f64, f64), zoom: f64) -> Self {
         let world = world_size(zoom);
-        let lat = lat.to_radians();
-        let x = (lon + 180.0) / 360.0 * world;
-        let y = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0 * world;
 
         Self {
-            center: (x, y),
+            center: (position.0 * world, position.1 * world),
             zoom,
         }
+    }
+
+    /// Latitude and longitude of the center of the view.
+    pub fn center_lat_lon(&self) -> (f64, f64) {
+        let world = world_size(self.zoom);
+        let (x, y) = (self.center.0 / world, self.center.1 / world);
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
+
+        (lat, x * 360.0 - 180.0)
     }
 
     pub fn zoom(&self) -> f64 {
@@ -143,6 +154,15 @@ impl Camera {
 
         tiles
     }
+}
+
+/// Web Mercator position of a latitude and longitude, spanning 0..1 on both axes.
+pub fn world_position(lat: f64, lon: f64) -> (f64, f64) {
+    let lat = lat.to_radians();
+    let x = (lon + 180.0) / 360.0;
+    let y = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0;
+
+    (x, y)
 }
 
 fn world_size(zoom: f64) -> f64 {
