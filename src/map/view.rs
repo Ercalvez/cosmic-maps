@@ -1,13 +1,15 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use cosmic::iced::widget::canvas::{self, Action, Event, Frame, Geometry};
+use cosmic::iced::widget::canvas::{self, Action, Event, Frame, Geometry, Path};
 use cosmic::iced::futures::Stream;
 use cosmic::iced::widget::image::Handle;
 use cosmic::iced::{Color, Length, Point, Rectangle, Size, Vector, mouse};
 use cosmic::prelude::*;
-use cosmic::widget::{self, icon};
+use cosmic::widget::{self, icon, popover};
 
 use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId};
+use super::poi::Poi;
 use super::state::{MapState, RenderedTile};
 
 /// Initial view: Berlin.
@@ -19,6 +21,14 @@ const ZOOM_PER_CLICK: f64 = 1.0;
 /// Zoom levels per mouse wheel notch, and per pixel of touchpad scrolling.
 const ZOOM_PER_LINE: f64 = 0.5;
 const ZOOM_PER_PIXEL: f64 = 0.01;
+
+/// Farthest a press may move, in pixels, and still count as a click.
+const CLICK_TOLERANCE: f32 = 4.0;
+/// Farthest a click may land from a POI, in pixels, to select it.
+const POI_HIT_RADIUS: f32 = 20.0;
+const MARKER_RADIUS: f32 = 6.0;
+/// Gap between the selected POI and the corner of its popover.
+const POPOVER_OFFSET: f32 = 8.0;
 
 /// How many levels up to look for a loaded tile to show while one is missing.
 const MAX_FALLBACK_LEVELS: u8 = 6;
@@ -34,6 +44,9 @@ pub enum MapEvent {
     /// Zoom by `delta` levels around `anchor`, or around the center if `None`.
     Zoom { delta: f64, anchor: Option<Point> },
     Resized(Size),
+    /// A click without dragging, at this position in the map.
+    Click(Point),
+    ClosePopover,
 }
 
 pub struct MapView {
@@ -42,6 +55,9 @@ pub struct MapView {
     viewport: Size,
     /// Rendered tiles; `None` marks tiles that failed to load.
     tiles: HashMap<TileId, Option<Handle>>,
+    pois: HashMap<TileId, Arc<[Poi]>>,
+    /// POI whose popover is shown.
+    selected: Option<Poi>,
     /// Last request sent to the worker, to avoid resending it on every pan.
     wanted: Vec<TileId>,
 }
@@ -58,6 +74,8 @@ impl MapView {
             camera: Camera::from_lat_lon(lat, lon, INITIAL_ZOOM),
             viewport: Size::ZERO,
             tiles: HashMap::new(),
+            pois: HashMap::new(),
+            selected: None,
             wanted: Vec::new(),
         };
 
@@ -72,6 +90,8 @@ impl MapView {
                 self.camera.zoom_at(delta, anchor, self.viewport);
             }
             MapEvent::Resized(size) => self.viewport = size,
+            MapEvent::Click(point) => self.selected = self.poi_at(point),
+            MapEvent::ClosePopover => self.selected = None,
         }
 
         self.request_tiles();
@@ -79,6 +99,31 @@ impl MapView {
 
     pub fn insert_tile(&mut self, rendered: RenderedTile) {
         self.tiles.insert(rendered.tile, rendered.image);
+        self.pois.insert(rendered.tile, rendered.pois);
+    }
+
+    /// The POI closest to `point`, if one is within `POI_HIT_RADIUS`.
+    fn poi_at(&self, point: Point) -> Option<Poi> {
+        self.camera
+            .visible_tiles(self.viewport)
+            .iter()
+            .filter_map(|tile| self.pois.get(&tile.id))
+            .flat_map(|pois| pois.iter())
+            .map(|poi| {
+                let distance = self.camera.to_screen(poi.position, self.viewport).distance(point);
+                (poi, distance)
+            })
+            .filter(|(_, distance)| *distance <= POI_HIT_RADIUS)
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(poi, _)| poi.clone())
+    }
+
+    /// Where the selected POI is on screen, if there is one and it is in view.
+    fn selected_position(&self) -> Option<Point> {
+        let position = self.camera.to_screen(self.selected.as_ref()?.position, self.viewport);
+        Rectangle::with_size(self.viewport)
+            .contains(position)
+            .then_some(position)
     }
 
     /// Asks the worker for visible tiles that are not rendered yet.
@@ -132,6 +177,13 @@ impl MapView {
         .align_right(Length::Fill)
         .align_top(Length::Fill);
 
+        let close = on_event(MapEvent::ClosePopover);
+        let poi_popup = self
+            .selected
+            .as_ref()
+            .zip(self.selected_position())
+            .map(|(poi, position)| (poi_popup(poi, close.clone()), position));
+
         let map = widget::canvas(MapCanvas {
             map: self,
             on_event,
@@ -139,8 +191,30 @@ impl MapView {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        cosmic::iced::widget::stack![map, controls].into()
+        // Clicks outside the map, such as on the nav bar, also close the popover.
+        let mut map = popover(cosmic::iced::widget::stack![map, controls]).on_close(close);
+        if let Some((popup, position)) = poi_popup {
+            let corner = position + Vector::new(POPOVER_OFFSET, POPOVER_OFFSET);
+            map = map.popup(popup).position(popover::Position::Point(corner));
+        }
+
+        map.into()
     }
+}
+
+fn poi_popup<'a, Message: Clone + 'static>(poi: &'a Poi, close: Message) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+
+    widget::container(
+        widget::row::with_capacity(2)
+            .push(widget::text::heading(&poi.name))
+            .push(widget::button::icon(icon::from_name("window-close-symbolic")).on_press(close))
+            .align_y(cosmic::iced::Alignment::Center)
+            .spacing(spacing.space_xs),
+    )
+    .padding([spacing.space_xxs, spacing.space_xxs, spacing.space_xxs, spacing.space_s])
+    .class(cosmic::theme::Container::Dropdown)
+    .into()
 }
 
 struct MapCanvas<'a, F> {
@@ -153,6 +227,8 @@ struct CanvasState {
     size: Size,
     /// Cursor position at the last drag step, while the left button is held.
     drag_from: Option<Point>,
+    /// Where the left button was pressed, until the cursor moves too far for a click.
+    click_from: Option<Point>,
 }
 
 impl<Message, F> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for MapCanvas<'_, F>
@@ -178,7 +254,9 @@ where
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 // Window coordinates, like `CursorMoved` positions.
-                state.drag_from = Some(cursor.position_over(bounds)?);
+                let position = cursor.position_over(bounds)?;
+                state.drag_from = Some(position);
+                state.click_from = Some(position);
                 Some(Action::capture())
             }
 
@@ -186,6 +264,13 @@ where
                 let from = state.drag_from?;
                 state.drag_from = Some(*position);
                 let delta = *position - from;
+
+                if state
+                    .click_from
+                    .is_some_and(|start| start.distance(*position) > CLICK_TOLERANCE)
+                {
+                    state.click_from = None;
+                }
 
                 Some(
                     Action::publish((self.on_event)(MapEvent::Pan {
@@ -198,7 +283,12 @@ where
 
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 state.drag_from.take()?;
-                Some(Action::capture())
+
+                let Some(start) = state.click_from.take() else {
+                    return Some(Action::capture());
+                };
+                let point = Point::ORIGIN + (start - bounds.position());
+                Some(Action::publish((self.on_event)(MapEvent::Click(point))).and_capture())
             }
 
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -225,7 +315,7 @@ where
         &self,
         _state: &CanvasState,
         renderer: &cosmic::Renderer,
-        _theme: &cosmic::Theme,
+        theme: &cosmic::Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry<cosmic::Renderer>> {
@@ -261,6 +351,15 @@ where
                     PLACEHOLDER,
                 );
             }
+        }
+
+        if let Some(position) = self.map.selected_position() {
+            let marker = Path::circle(position, MARKER_RADIUS);
+            frame.fill(&marker, Color::from(theme.cosmic().accent_color()));
+            frame.stroke(
+                &marker,
+                canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
+            );
         }
 
         vec![frame.into_geometry()]

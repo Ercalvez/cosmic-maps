@@ -26,6 +26,7 @@ use maplibre::{
 };
 
 use super::camera::TileId;
+use super::poi::{Poi, parse_pois};
 use super::state::{MapCommand, RenderedTile};
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
@@ -74,15 +75,19 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
         }
         let tile = queue.remove(0);
 
-        let image = if render_tile(&mut map, &style, tile).await {
-            frame_rx.try_recv().ok()
-        } else {
-            None
+        let (image, pois) = match render_tile(&mut map, &style, tile).await {
+            Some(pois) => (frame_rx.try_recv().ok(), pois),
+            None => (None, Vec::new()),
         };
         // Built here so the UI thread receives a cheaply clonable handle.
         let image = image.map(|image| Handle::from_rgba(image.width, image.height, image.pixels));
 
-        if tx.unbounded_send(RenderedTile { tile, image }).is_err() {
+        let rendered = RenderedTile {
+            tile,
+            image,
+            pois: pois.into(),
+        };
+        if tx.unbounded_send(rendered).is_err() {
             break;
         }
     }
@@ -110,14 +115,15 @@ async fn create_map(style: Style, tx: Sender<MapImage>) -> HeadlessMap {
     HeadlessMap::new(style, renderer, kernel, plugins).expect("failed to create map")
 }
 
-/// Renders a tile; the frame is sent to the channel given to `FrameCapturePlugin`.
-async fn render_tile(map: &mut HeadlessMap, style: &Style, tile: TileId) -> bool {
+/// Renders a tile and returns its POIs, or `None` if it could not be fetched. The
+/// frame is sent to the channel given to `FrameCapturePlugin`.
+async fn render_tile(map: &mut HeadlessMap, style: &Style, tile: TileId) -> Option<Vec<Poi>> {
     let coords = WorldTileCoords::from((tile.x, tile.y, tile.z.into()));
     let data = match map.fetch_tile(coords).await {
         Ok(data) => data,
         Err(err) => {
             eprintln!("failed to fetch tile {coords}: {err:?}");
-            return false;
+            return None;
         }
     };
 
@@ -128,7 +134,7 @@ async fn render_tile(map: &mut HeadlessMap, style: &Style, tile: TileId) -> bool
 
     // Runs the schedule, which ends with `CaptureFrameSystem` sending the image.
     map.render_tile(layers);
-    true
+    Some(parse_pois(&data, tile))
 }
 
 /// Sends every rendered frame through `tx`.

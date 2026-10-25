@@ -1210,6 +1210,7 @@ dependencies = [
 name = "cosmic-maps"
 version = "0.1.0"
 dependencies = [
+ "geozero",
  "i18n-embed",
  "i18n-embed-fl",
  "libcosmic",

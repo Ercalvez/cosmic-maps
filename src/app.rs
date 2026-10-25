@@ -252,6 +252,9 @@ impl cosmic::Application for AppModel {
             match key.as_ref() {
                 keyboard::Key::Character("+" | "=") => return zoom(1.0),
                 keyboard::Key::Character("-") => return zoom(-1.0),
+                keyboard::Key::Named(keyboard::key::Named::Escape) => {
+                    return Some(Message::Map(MapEvent::ClosePopover));
+                }
                 _ => {}
             }
 
