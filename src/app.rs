@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::directions::{self, Directions, RouteRequest};
 use crate::fl;
+use crate::key_bind;
 use crate::map::location::{self, Position};
 use crate::map::style::MapPalette;
 use crate::map::poi::{OsmId, Poi};
@@ -43,6 +44,8 @@ pub struct AppModel {
     map: MapView,
     /// Key bindings for the application's menu bar.
     key_binds: HashMap<menu::KeyBind, MenuAction>,
+    /// More keys for the same actions, not shown in menus.
+    key_aliases: Vec<(menu::KeyBind, MenuAction)>,
     /// Configuration data that persists between application runs.
     config: Config,
     /// Search field in the header bar, shown with its button or Ctrl+F.
@@ -74,10 +77,12 @@ pub enum Message {
     OpenDirections,
     DirectionsBack,
     Directions(directions::Message),
+    /// A key pressed that no widget used, for the shortcuts.
+    Key(keyboard::Modifiers, keyboard::Key, keyboard::key::Physical),
     Arrow(Arrow),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arrow {
     Left,
     Right,
@@ -131,7 +136,8 @@ impl cosmic::Application for AppModel {
             core,
             context_page: ContextPage::default(),
             about,
-            key_binds: HashMap::new(),
+            key_binds: key_bind::key_binds(),
+            key_aliases: key_bind::aliases(),
             // Optional configuration file for an application.
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                 .map(|context| match Config::get_entry(&context) {
@@ -167,7 +173,14 @@ impl cosmic::Application for AppModel {
             menu::root(fl!("view")).apply(Element::from),
             menu::items(
                 &self.key_binds,
-                vec![menu::Item::Button(fl!("about"), None, MenuAction::About)],
+                vec![
+                    menu::Item::Button(fl!("zoom-in"), None, MenuAction::ZoomIn),
+                    menu::Item::Button(fl!("zoom-out"), None, MenuAction::ZoomOut),
+                    menu::Item::Divider,
+                    menu::Item::Button(fl!("show-location"), None, MenuAction::Locate),
+                    menu::Item::Divider,
+                    menu::Item::Button(fl!("about"), None, MenuAction::About),
+                ],
             ),
         )]);
 
@@ -307,19 +320,14 @@ impl cosmic::Application for AppModel {
                 return None;
             }
 
-            let event::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event else {
-                return None;
-            };
-
-            // Esc goes through `on_escape`.
-            let zoom = |delta| Some(Message::Map(MapEvent::Zoom { delta, anchor: None }));
-            match key.as_ref() {
-                keyboard::Key::Character("+" | "=") => zoom(1.0),
-                keyboard::Key::Character("-") => zoom(-1.0),
-                keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => Some(Message::Arrow(Arrow::Left)),
-                keyboard::Key::Named(keyboard::key::Named::ArrowRight) => Some(Message::Arrow(Arrow::Right)),
-                keyboard::Key::Named(keyboard::key::Named::ArrowUp) => Some(Message::Arrow(Arrow::Up)),
-                keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(Message::Arrow(Arrow::Down)),
+            // Esc goes through `on_escape`, Ctrl+F through `on_search`.
+            match event {
+                event::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    physical_key,
+                    ..
+                }) => Some(Message::Key(modifiers, key, physical_key)),
                 _ => None,
             }
         }));
@@ -401,6 +409,13 @@ impl cosmic::Application for AppModel {
                 self.show_routes(false);
                 self.context_page = ContextPage::Place;
                 self.core.window.show_context = self.map.has_place();
+            }
+
+            Message::Key(modifiers, key, physical_key) => {
+                let pressed = (modifiers, &key, Some(&physical_key));
+                if let Some(action) = key_bind::action(&self.key_binds, &self.key_aliases, pressed) {
+                    return self.update(menu::action::MenuAction::message(&action));
+                }
             }
 
             Message::Arrow(arrow) => {
@@ -620,6 +635,11 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
+    ZoomIn,
+    ZoomOut,
+    /// Show the user's position.
+    Locate,
+    Pan(Arrow),
 }
 
 impl menu::action::MenuAction for MenuAction {
@@ -628,6 +648,10 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::ZoomIn => Message::Map(MapEvent::Zoom { delta: 1.0, anchor: None }),
+            MenuAction::ZoomOut => Message::Map(MapEvent::Zoom { delta: -1.0, anchor: None }),
+            MenuAction::Locate => Message::Map(MapEvent::Locate),
+            MenuAction::Pan(arrow) => Message::Arrow(*arrow),
         }
     }
 }

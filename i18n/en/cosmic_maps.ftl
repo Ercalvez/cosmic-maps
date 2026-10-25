@@ -2,6 +2,9 @@ app-title = Cosmic Maps
 about = About
 repository = Repository
 view = View
+zoom-in = Zoom in
+zoom-out = Zoom out
+show-location = Show your location
 git-description = Git commit {$hash} on {$date}
 
 search-placeholder = Search for places

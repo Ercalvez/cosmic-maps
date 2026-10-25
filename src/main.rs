@@ -2,6 +2,7 @@
 
 mod app;
 mod directions;
+mod key_bind;
 mod place_view;
 mod route_view;
 mod search_box;
