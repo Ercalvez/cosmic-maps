@@ -3,15 +3,16 @@
 use crate::config::Config;
 use crate::directions::{Directions, RouteRequest};
 use crate::fl;
-use crate::map::details::{self, PoiDetails};
 use crate::map::location::{self, Position};
 use crate::map::style::MapPalette;
 use crate::map::poi::{OsmId, Poi};
-use crate::map::routing::{self, Plan};
-use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
 use crate::route_view::{self, RouteChoice};
+use crate::services::nominatim::{self, PoiDetails};
+use crate::services::photon::{self, SearchResult};
+use crate::services::transitous::{self, Plan};
+use crate::services;
 use crate::search_box::{SEARCH_DELAY, SearchBox, SearchTarget, Submit};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -60,18 +61,18 @@ pub enum Message {
     UpdateConfig(Config),
     Map(MapEvent),
     TileReady(RenderedTile),
-    PoiDetails(OsmId, Result<PoiDetails, details::Error>),
+    PoiDetails(OsmId, Result<PoiDetails, services::Error>),
     /// The user's position, or why it cannot be known.
     Location(Result<Position, String>),
     /// What a click that hit no POI found, for the lookup with this number.
-    Reverse(u64, Result<Option<(Poi, PoiDetails)>, details::Error>),
+    Reverse(u64, Result<Option<(Poi, PoiDetails)>, services::Error>),
     SearchActivate,
     SearchClear,
     SearchInput(SearchTarget, String),
     /// Sent `SEARCH_DELAY` after typing; searches if the text is still the same.
     SearchDebounced(SearchTarget, String),
     SearchSubmit(SearchTarget),
-    SearchResults(SearchTarget, String, Result<Vec<SearchResult>, details::Error>),
+    SearchResults(SearchTarget, String, Result<Vec<SearchResult>, services::Error>),
     SearchSelect(SearchTarget, usize),
     /// The place panel's Directions button.
     OpenDirections,
@@ -79,7 +80,7 @@ pub enum Message {
     DirectionsSwap,
     DirectionsBack,
     /// Routes found for the directions form, for the search with this number.
-    RouteFound(u64, Result<Plan, routing::Error>),
+    RouteFound(u64, Result<Plan, services::Error>),
     /// Transit options leaving later (`true`) or earlier than those shown.
     RoutePage(bool),
     /// Show or hide the details of a route option.
@@ -642,7 +643,7 @@ impl AppModel {
 
     fn find_route(request: RouteRequest) -> Task<cosmic::Action<Message>> {
         cosmic::task::future(async move {
-            let result = routing::plan(request.from, request.to, request.mode, request.page).await;
+            let result = transitous::plan(request.from, request.to, request.mode, request.page).await;
             Message::RouteFound(request.id, result)
         })
     }
@@ -661,7 +662,7 @@ impl AppModel {
     fn run_map_action(&self, action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
         match action {
             Some(MapAction::FetchDetails(osm_id)) => cosmic::task::future(async move {
-                Message::PoiDetails(osm_id, details::fetch(osm_id).await)
+                Message::PoiDetails(osm_id, nominatim::fetch(osm_id).await)
             }),
             Some(MapAction::Reverse {
                 request,
@@ -669,7 +670,7 @@ impl AppModel {
                 lon,
                 zoom,
             }) => cosmic::task::future(async move {
-                Message::Reverse(request, details::reverse(lat, lon, zoom).await)
+                Message::Reverse(request, nominatim::reverse(lat, lon, zoom).await)
             }),
             None => Task::none(),
         }
@@ -687,7 +688,7 @@ impl AppModel {
     fn search(&self, target: SearchTarget, query: String) -> Task<cosmic::Action<Message>> {
         let near = self.map.center();
         cosmic::task::future(async move {
-            let result = search::search(query.clone(), near).await;
+            let result = photon::search(query.clone(), near).await;
             Message::SearchResults(target, query, result)
         })
     }

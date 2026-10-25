@@ -15,7 +15,8 @@ use crate::map::camera::lat_lon;
 use crate::map::location::Position;
 use crate::map::poi::Poi;
 use crate::map::RouteOverlay;
-use crate::map::routing::{self, Plan, RouteMode};
+use crate::services::transitous::{Plan, RouteMode};
+use crate::services;
 use crate::route_view::{self, Ends, RouteChoice};
 use crate::search_box::{SearchBox, SearchTarget};
 
@@ -101,7 +102,7 @@ struct RouteQuery {
     mode: RouteMode,
 }
 
-/// A route search to run with [`routing::plan`], then pass to
+/// A route search to run with [`transitous::plan`](crate::services::transitous::plan), then pass to
 /// [`Directions::insert_route`].
 #[derive(Debug, Clone)]
 pub struct RouteRequest {
@@ -277,7 +278,7 @@ impl Directions {
     }
 
     /// Stores the answer to a search, unless a newer one was started since.
-    pub fn insert_route(&mut self, id: u64, result: Result<Plan, routing::Error>) {
+    pub fn insert_route(&mut self, id: u64, result: Result<Plan, services::Error>) {
         if id != self.latest_request {
             return;
         }
@@ -580,8 +581,8 @@ mod tests {
         assert!(directions.open_stops.is_empty());
     }
 
-    fn itinerary() -> routing::Itinerary {
-        routing::Itinerary {
+    fn itinerary() -> crate::services::transitous::Itinerary {
+        crate::services::transitous::Itinerary {
             duration: 600,
             start_time: jiff::Timestamp::UNIX_EPOCH,
             end_time: jiff::Timestamp::UNIX_EPOCH,

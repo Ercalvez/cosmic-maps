@@ -6,6 +6,7 @@ mod place_view;
 mod route_view;
 mod search_box;
 mod map;
+mod services;
 mod config;
 mod i18n;
 

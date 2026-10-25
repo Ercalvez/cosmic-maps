@@ -9,7 +9,7 @@ use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget;
 
-use crate::map::search::SearchResult;
+use crate::services::photon::SearchResult;
 
 /// Pause after typing before searching, and the shortest query searched, as in
 /// GNOME Maps.

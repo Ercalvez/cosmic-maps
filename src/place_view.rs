@@ -7,7 +7,7 @@ use cosmic::widget::{self, icon};
 
 use crate::app::Message;
 use crate::fl;
-use crate::map::details::{PoiDetails, Wheelchair};
+use crate::services::nominatim::{PoiDetails, Wheelchair};
 use crate::map::poi::Poi;
 use crate::map::view::{DetailsState, Place};
 

@@ -12,10 +12,9 @@ use cosmic::iced::Color;
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use super::camera::world_position;
-use super::http::{CLIENT, RateLimit};
+use super::http::{CLIENT, Error, RateLimit};
+use crate::map::camera::world_position;
 
-pub use super::http::Error;
 
 const PLAN_URL: &str = "https://api.transitous.org/api/v6/plan";
 /// Transitous gives no numbers; plans are only requested on user actions, so one

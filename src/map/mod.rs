@@ -1,10 +1,6 @@
 pub mod camera;
-pub mod details;
-mod http;
 pub mod location;
 pub mod poi;
-pub mod routing;
-pub mod search;
 pub mod style;
 pub mod state;
 pub mod view;

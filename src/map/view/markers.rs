@@ -4,7 +4,7 @@ use cosmic::iced::{Color, Rectangle, Size, mouse};
 use super::MapView;
 use super::routes::{draw_route_stops, draw_routes};
 use crate::map::camera::{Camera, world_position};
-use crate::map::details::Shape;
+use crate::services::nominatim::Shape;
 use crate::map::style::MapPalette;
 
 const POI_MARKER_RADIUS: f32 = 3.5;

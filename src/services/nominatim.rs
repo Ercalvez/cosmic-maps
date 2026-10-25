@@ -6,11 +6,10 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::camera::world_position;
-use super::http::{CLIENT, RateLimit};
-use super::poi::{OsmId, Poi, system_languages};
-
-pub use super::http::Error;
+use super::http::{CLIENT, Error, RateLimit};
+use super::join;
+use crate::map::camera::world_position;
+use crate::map::poi::{OsmId, Poi, system_languages};
 
 const LOOKUP_URL: &str = "https://nominatim.openstreetmap.org/lookup";
 const REVERSE_URL: &str = "https://nominatim.openstreetmap.org/reverse";
@@ -263,12 +262,6 @@ impl Address {
         );
         join([street, locality], ", ")
     }
-}
-
-/// Joins the present parts, or returns `None` if there are none.
-pub(super) fn join<const N: usize>(parts: [Option<String>; N], separator: &str) -> Option<String> {
-    let parts: Vec<String> = parts.into_iter().flatten().collect();
-    (!parts.is_empty()).then(|| parts.join(separator))
 }
 
 impl From<Place> for PoiDetails {

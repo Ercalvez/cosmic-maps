@@ -13,7 +13,7 @@ use cosmic::widget::{self, icon};
 
 use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon, world_position, zoom_showing};
 use super::location::Position;
-use super::details::{self, PoiDetails, Shape};
+use crate::services::{self, nominatim::{PoiDetails, Shape}};
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
 use super::style::MapPalette;
@@ -64,10 +64,10 @@ pub enum MapEvent {
 /// Work the map needs the app to do, returned from [`MapView::on_event`].
 #[derive(Debug, Clone)]
 pub enum MapAction {
-    /// Fetch details with [`details::fetch`] and pass them to
+    /// Fetch details with [`nominatim::fetch`](crate::services::nominatim::fetch) and pass them to
     /// [`MapView::insert_details`].
     FetchDetails(OsmId),
-    /// Find what is at a place with [`details::reverse`] and pass it to
+    /// Find what is at a place with [`nominatim::reverse`](crate::services::nominatim::reverse) and pass it to
     /// [`MapView::insert_reverse`].
     Reverse {
         request: u64,
@@ -77,7 +77,7 @@ pub enum MapAction {
     },
 }
 
-/// A click that hit no POI, waiting for [`details::reverse`] to say what is there.
+/// A click that hit no POI, waiting for Nominatim to say what is there.
 #[derive(Clone, Copy)]
 struct Lookup {
     request: u64,
@@ -220,15 +220,15 @@ impl MapView {
         self.camera.center_lat_lon()
     }
 
-    pub fn insert_details(&mut self, osm_id: OsmId, result: Result<PoiDetails, details::Error>) {
+    pub fn insert_details(&mut self, osm_id: OsmId, result: Result<PoiDetails, services::Error>) {
         match result {
             Ok(details) => {
                 self.details.insert(osm_id, DetailsState::Loaded(details));
             }
-            Err(details::Error::NotFound) => {
+            Err(services::Error::NotFound) => {
                 self.details.insert(osm_id, DetailsState::Unavailable);
             }
-            Err(details::Error::Network(err)) => {
+            Err(services::Error::Network(err)) => {
                 // Forget the request, so selecting the POI again retries it.
                 eprintln!("failed to fetch details of {osm_id:?}: {err}");
                 self.details.remove(&osm_id);
@@ -265,7 +265,7 @@ impl MapView {
     pub fn insert_reverse(
         &mut self,
         request: u64,
-        result: Result<Option<(Poi, PoiDetails)>, details::Error>,
+        result: Result<Option<(Poi, PoiDetails)>, services::Error>,
     ) {
         // A newer click, or closing the panel, replaced it.
         if self.lookup.map(|lookup| lookup.request) != Some(request) {

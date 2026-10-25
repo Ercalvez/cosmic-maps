@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::camera::world_position;
-use super::details::join;
 use super::http::{CLIENT, Error, RateLimit};
-use super::poi::{OsmId, Poi, system_languages};
+use super::join;
+use crate::map::camera::world_position;
+use crate::map::poi::{OsmId, Poi, system_languages};
 
 const SEARCH_URL: &str = "https://photon.komoot.io/api/";
 const RESULT_LIMIT: &str = "8";

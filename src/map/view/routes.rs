@@ -2,7 +2,7 @@ use cosmic::iced::widget::canvas::{self, Frame, Path};
 use cosmic::iced::{Color, Size};
 
 use crate::map::camera::Camera;
-use crate::map::routing::{Itinerary, Leg};
+use crate::services::transitous::{Itinerary, Leg};
 use crate::map::style::MapPalette;
 
 /// Width of the chosen route, of its outline on each side, and of the others.
