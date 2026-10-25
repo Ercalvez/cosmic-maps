@@ -6,6 +6,21 @@ git-description = Git commit {$hash} on {$date}
 
 search-placeholder = Search for places
 
+## Directions
+
+directions = Directions
+directions-from = From
+directions-to = To
+directions-choose-start = Choose start
+directions-choose-destination = Choose destination
+directions-swap = Swap start and destination
+directions-back = Back to place
+your-location = Your location
+travel-mode-foot = Walk
+travel-mode-bike = Bike
+travel-mode-transit = Transit
+travel-mode-car = Car
+
 ## POI details
 
 poi-details-loading = Loading details…
