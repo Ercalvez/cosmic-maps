@@ -328,6 +328,12 @@ where
             if let Some(Some(handle)) = self.map.tiles.get(&tile.id) {
                 frame.draw_image(rect, handle);
             } else if let Some((ancestor, handle)) = self.map.loaded_ancestor(tile.id) {
+                // `with_clip` replaces the frame's clip instead of narrowing it, so keep
+                // the region inside the canvas or the scaled-up tile spills over the window.
+                let Some(clip) = rect.intersection(&Rectangle::with_size(bounds.size())) else {
+                    continue;
+                };
+
                 // Show the matching part of a lower-zoom tile, scaled up.
                 let levels = tile.id.z - ancestor.z;
                 let mask = (1 << levels) - 1;
@@ -337,7 +343,7 @@ where
                 );
                 let size = tile.size * f32::from(1u16 << levels);
 
-                frame.with_clip(rect, |frame| {
+                frame.with_clip(clip, |frame| {
                     frame.draw_image(
                         Rectangle::new(tile.position - offset, Size::new(size, size)),
                         handle,
