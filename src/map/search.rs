@@ -128,6 +128,7 @@ impl SearchResult {
                 osm_id: match (osm_type.as_deref(), osm_id) {
                     (Some("N"), Some(id)) => Some(OsmId::Node(id)),
                     (Some("W"), Some(id)) => Some(OsmId::Way(id)),
+                    (Some("R"), Some(id)) => Some(OsmId::Relation(id)),
                     _ => None,
                 },
                 position: world_position(lat, lon),
@@ -179,9 +180,9 @@ mod tests {
             Some("Dircksenstraße 2, Berlin, Allemagne")
         );
 
-        // Relations have no details to fetch, and the city is not repeated.
+        // The city is not repeated in its own area.
         let city = &results[1];
-        assert_eq!(city.poi.osm_id, None);
+        assert_eq!(city.poi.osm_id, Some(OsmId::Relation(62422)));
         assert_eq!(city.area.as_deref(), Some("Allemagne"));
 
         // A plain address is named after itself.

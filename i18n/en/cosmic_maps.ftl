@@ -11,6 +11,7 @@ search-placeholder = Search for places
 ## POI details
 
 poi-details-loading = Loading details…
+poi-looking-up = Looking up…
 poi-wheelchair-yes = Wheelchair accessible
 poi-wheelchair-limited = Partially wheelchair accessible
 poi-wheelchair-no = Not wheelchair accessible
@@ -128,6 +129,22 @@ poi-type-doctors = Doctor
 poi-type-dentist = Dentist
 poi-type-pharmacy = Pharmacy
 poi-type-veterinary = Veterinarian
+
+# Addresses and areas, as found by clicking the map
+poi-type-house = Address
+poi-type-building = Building
+poi-type-highway = Street
+poi-type-boundary = Area
+poi-type-administrative = Administrative area
+poi-type-country = Country
+poi-type-state = Region
+poi-type-city = City
+poi-type-town = Town
+poi-type-village = Village
+poi-type-suburb = District
+poi-type-neighbourhood = Neighborhood
+poi-type-river = River
+poi-type-canal = Canal
 
 # Places of worship, keyed by religion
 poi-type-place_of_worship = Place of worship

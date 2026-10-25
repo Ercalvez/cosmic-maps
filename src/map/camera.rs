@@ -60,10 +60,16 @@ impl Camera {
     /// Latitude and longitude of the center of the view.
     pub fn center_lat_lon(&self) -> (f64, f64) {
         let world = world_size(self.zoom);
-        let (x, y) = (self.center.0 / world, self.center.1 / world);
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
+        lat_lon((self.center.0 / world, self.center.1 / world))
+    }
 
-        (lat, x * 360.0 - 180.0)
+    /// Web Mercator position, spanning 0..1, of a point in the viewport.
+    pub fn to_world(&self, point: Point, viewport: Size) -> (f64, f64) {
+        let world = world_size(self.zoom);
+        let x = self.center.0 + f64::from(point.x - viewport.width / 2.0);
+        let y = self.center.1 + f64::from(point.y - viewport.height / 2.0);
+
+        ((x / world).rem_euclid(1.0), (y / world).clamp(0.0, 1.0))
     }
 
     pub fn zoom(&self) -> f64 {
@@ -163,6 +169,16 @@ pub fn world_position(lat: f64, lon: f64) -> (f64, f64) {
     let y = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0;
 
     (x, y)
+}
+
+/// Latitude and longitude of a Web Mercator position spanning 0..1.
+pub fn lat_lon(position: (f64, f64)) -> (f64, f64) {
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * position.1))
+        .sinh()
+        .atan()
+        .to_degrees();
+
+    (lat, position.0 * 360.0 - 180.0)
 }
 
 fn world_size(zoom: f64) -> f64 {

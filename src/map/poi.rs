@@ -31,7 +31,8 @@ impl Poi {
     pub fn category(&self) -> Option<String> {
         // `subclass` first: `class` can be misleading, such as `art_gallery` for
         // street artwork.
-        let values = [self.subclass.as_deref(), self.class.as_deref()];
+        // `yes` says nothing, as in `building=yes`.
+        let values = [self.subclass.as_deref(), self.class.as_deref()].map(|value| value.filter(|v| *v != "yes"));
 
         values
             .iter()
@@ -56,6 +57,7 @@ fn readable(value: &str) -> String {
 pub enum OsmId {
     Node(u64),
     Way(u64),
+    Relation(u64),
 }
 
 impl OsmId {

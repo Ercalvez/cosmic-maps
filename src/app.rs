@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::fl;
 use crate::map::details::{self, PoiDetails};
-use crate::map::poi::OsmId;
+use crate::map::poi::{OsmId, Poi};
 use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
 use cosmic::app::context_drawer;
@@ -65,6 +65,8 @@ pub enum Message {
     Map(MapEvent),
     TileReady(RenderedTile),
     PoiDetails(OsmId, Result<PoiDetails, details::Error>),
+    /// What a click that hit no POI found, for the lookup with this number.
+    Reverse(u64, Result<Option<(Poi, PoiDetails)>, details::Error>),
     SearchActivate,
     SearchClear,
     SearchInput(String),
@@ -469,6 +471,10 @@ impl cosmic::Application for AppModel {
                 self.map.insert_details(osm_id, result);
             }
 
+            Message::Reverse(request, result) => {
+                self.map.insert_reverse(request, result);
+            }
+
             Message::TileReady(tile) => {
                 self.map.insert_tile(tile);
             }
@@ -513,6 +519,14 @@ impl AppModel {
         match action {
             Some(MapAction::FetchDetails(osm_id)) => cosmic::task::future(async move {
                 Message::PoiDetails(osm_id, details::fetch(osm_id).await)
+            }),
+            Some(MapAction::Reverse {
+                request,
+                lat,
+                lon,
+                zoom,
+            }) => cosmic::task::future(async move {
+                Message::Reverse(request, details::reverse(lat, lon, zoom).await)
             }),
             Some(MapAction::OpenUrl(url)) => {
                 cosmic::Application::update(self, Message::LaunchUrl(url))

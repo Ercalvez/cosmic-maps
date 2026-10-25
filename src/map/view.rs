@@ -10,7 +10,7 @@ use cosmic::widget::{self, icon, popover};
 
 use crate::fl;
 
-use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId};
+use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon};
 use super::details::{self, PoiDetails, Wheelchair};
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
@@ -71,7 +71,23 @@ pub enum MapAction {
     /// Fetch details with [`details::fetch`] and pass them to
     /// [`MapView::insert_details`].
     FetchDetails(OsmId),
+    /// Find what is at a place with [`details::reverse`] and pass it to
+    /// [`MapView::insert_reverse`].
+    Reverse {
+        request: u64,
+        lat: f64,
+        lon: f64,
+        zoom: u8,
+    },
     OpenUrl(String),
+}
+
+/// A click that hit no POI, waiting for [`details::reverse`] to say what is there.
+#[derive(Clone, Copy)]
+struct Lookup {
+    request: u64,
+    /// Where the click was, in Web Mercator coordinates spanning 0..1.
+    position: (f64, f64),
 }
 
 /// Extra information about a POI, by OpenStreetMap object.
@@ -91,6 +107,9 @@ pub struct MapView {
     pois: HashMap<TileId, Arc<[Poi]>>,
     /// POI whose popover is shown.
     selected: Option<Poi>,
+    /// Shown instead of `selected` until the lookup answers.
+    lookup: Option<Lookup>,
+    next_lookup: u64,
     details: HashMap<OsmId, DetailsState>,
     /// Last request sent to the worker, to avoid resending it on every pan.
     wanted: Vec<TileId>,
@@ -110,6 +129,8 @@ impl MapView {
             tiles: HashMap::new(),
             pois: HashMap::new(),
             selected: None,
+            lookup: None,
+            next_lookup: 0,
             details: HashMap::new(),
             wanted: Vec::new(),
         };
@@ -128,10 +149,18 @@ impl MapView {
             }
             MapEvent::Resized(size) => self.viewport = size,
             MapEvent::Click(point) => {
-                self.selected = self.poi_at(point);
-                action = self.request_details();
+                if let Some(poi) = self.poi_at(point) {
+                    self.lookup = None;
+                    self.selected = Some(poi);
+                    action = self.request_details();
+                } else if self.selected.is_some() || self.lookup.is_some() {
+                    // A click elsewhere closes the popover.
+                    self.close_popover();
+                } else {
+                    action = Some(self.look_up(point));
+                }
             }
-            MapEvent::ClosePopover => self.selected = None,
+            MapEvent::ClosePopover => self.close_popover(),
             MapEvent::OpenUrl(url) => action = Some(MapAction::OpenUrl(url)),
         }
 
@@ -142,6 +171,7 @@ impl MapView {
     /// Centers the map on `poi` and opens its popover, such as for a search result.
     pub fn show_place(&mut self, poi: Poi) -> Option<MapAction> {
         self.camera = Camera::centered_on(poi.position, PLACE_ZOOM);
+        self.lookup = None;
         self.selected = Some(poi);
         self.request_tiles();
         self.request_details()
@@ -165,6 +195,55 @@ impl MapView {
                 eprintln!("failed to fetch details of {osm_id:?}: {err}");
                 self.details.remove(&osm_id);
             }
+        }
+    }
+
+    fn close_popover(&mut self) {
+        self.selected = None;
+        self.lookup = None;
+    }
+
+    /// Starts finding what is at `point`, which hit no POI.
+    fn look_up(&mut self, point: Point) -> MapAction {
+        let position = self.camera.to_world(point, self.viewport);
+        let (lat, lon) = lat_lon(position);
+        self.next_lookup += 1;
+        self.lookup = Some(Lookup {
+            request: self.next_lookup,
+            position,
+        });
+
+        MapAction::Reverse {
+            request: self.next_lookup,
+            lat,
+            lon,
+            // Nominatim's detail levels roughly match map zoom levels.
+            zoom: self.camera.zoom().round().clamp(3.0, 18.0) as u8,
+        }
+    }
+
+    /// Selects what a lookup found, if it is still the latest one.
+    pub fn insert_reverse(
+        &mut self,
+        request: u64,
+        result: Result<Option<(Poi, PoiDetails)>, details::Error>,
+    ) {
+        // A newer click, or closing the popover, replaced it.
+        if self.lookup.map(|lookup| lookup.request) != Some(request) {
+            return;
+        }
+        self.lookup = None;
+
+        match result {
+            Ok(Some((poi, details))) => {
+                // The details came with the answer: no need to fetch them.
+                if let Some(osm_id) = poi.osm_id {
+                    self.details.insert(osm_id, DetailsState::Loaded(details));
+                }
+                self.selected = Some(poi);
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("failed to look up what is at the click: {err:?}"),
         }
     }
 
@@ -228,7 +307,12 @@ impl MapView {
 
     /// Where the selected POI is on screen, if there is one and it is in view.
     fn selected_position(&self) -> Option<Point> {
-        let position = self.camera.to_screen(self.selected.as_ref()?.position, self.viewport);
+        let position = match (&self.selected, self.lookup) {
+            (Some(poi), _) => poi.position,
+            (None, Some(lookup)) => lookup.position,
+            (None, None) => return None,
+        };
+        let position = self.camera.to_screen(position, self.viewport);
         Rectangle::with_size(self.viewport)
             .contains(position)
             .then_some(position)
@@ -286,14 +370,16 @@ impl MapView {
         .align_top(Length::Fill);
 
         let close = on_event(MapEvent::ClosePopover);
-        let poi_popup = self
-            .selected
-            .as_ref()
-            .zip(self.selected_position())
-            .map(|(poi, position)| {
-                let details = poi.osm_id.and_then(|osm_id| self.details.get(&osm_id));
-                (poi_popup(poi, details, &on_event), position)
-            });
+        let poi_popup = self.selected_position().map(|position| {
+            let popup = match &self.selected {
+                Some(poi) => {
+                    let details = poi.osm_id.and_then(|osm_id| self.details.get(&osm_id));
+                    poi_popup(poi, details, &on_event)
+                }
+                None => lookup_popup(&on_event),
+            };
+            (popup, position)
+        });
 
         let map = widget::canvas(MapCanvas {
             map: self,
@@ -384,6 +470,27 @@ fn poi_popup<'a, Message: Clone + 'static>(
     )
     .max_width(POPOVER_MAX_WIDTH)
     .padding([spacing.space_xxs, spacing.space_xxs, spacing.space_xs, spacing.space_s])
+    .class(cosmic::theme::Container::Dropdown)
+    .into()
+}
+
+/// Shown at a click while finding what is there.
+fn lookup_popup<'a, Message: Clone + 'static>(
+    on_event: &impl Fn(MapEvent) -> Message,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+    let close = widget::button::icon(icon::from_name("window-close-symbolic"))
+        .on_press(on_event(MapEvent::ClosePopover));
+
+    widget::container(
+        widget::row::with_capacity(2)
+            .push(widget::text::caption(fl!("poi-looking-up")).width(Length::Fill))
+            .push(close)
+            .align_y(cosmic::iced::Alignment::Center)
+            .spacing(spacing.space_xs),
+    )
+    .max_width(POPOVER_MAX_WIDTH)
+    .padding([spacing.space_xxs, spacing.space_xxs, spacing.space_xxs, spacing.space_s])
     .class(cosmic::theme::Container::Dropdown)
     .into()
 }

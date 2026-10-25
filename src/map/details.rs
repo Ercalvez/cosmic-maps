@@ -6,16 +6,20 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use super::camera::world_position;
 use super::http::{CLIENT, RateLimit};
-use super::poi::{OsmId, system_languages};
+use super::poi::{OsmId, Poi, system_languages};
 
 pub use super::http::Error;
 
 const LOOKUP_URL: &str = "https://nominatim.openstreetmap.org/lookup";
+const REVERSE_URL: &str = "https://nominatim.openstreetmap.org/reverse";
 /// Nominatim's usage policy allows at most one request per second.
 static NOMINATIM: RateLimit = RateLimit::new(Duration::from_secs(1));
 /// Languages for addresses, such as "fr,en".
 static LANGUAGES: LazyLock<String> = LazyLock::new(|| system_languages().join(","));
+/// Countries writing the house number before the street, such as "10 Rue Malakoff".
+const NUMBER_FIRST_COUNTRIES: [&str; 9] = ["au", "ca", "fr", "gb", "ie", "lu", "nz", "us", "za"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PoiDetails {
@@ -41,6 +45,7 @@ pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
     let id = match osm_id {
         OsmId::Node(id) => format!("N{id}"),
         OsmId::Way(id) => format!("W{id}"),
+        OsmId::Relation(id) => format!("R{id}"),
     };
     let places: Vec<Place> = CLIENT
         .get(LOOKUP_URL)
@@ -64,13 +69,94 @@ pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
         .ok_or(Error::NotFound)
 }
 
+/// What is at a latitude and longitude, with its details, or `None` if nothing is.
+/// `zoom` sets how detailed the answer is, from 3 (a country) to 18 (a building),
+/// close to map zoom levels.
+pub async fn reverse(lat: f64, lon: f64, zoom: u8) -> Result<Option<(Poi, PoiDetails)>, Error> {
+    NOMINATIM.wait_turn().await;
+
+    let (lat, lon, zoom) = (lat.to_string(), lon.to_string(), zoom.to_string());
+    let response: ReverseResponse = CLIENT
+        .get(REVERSE_URL)
+        .query(&[
+            ("lat", lat.as_str()),
+            ("lon", lon.as_str()),
+            ("zoom", zoom.as_str()),
+            ("format", "jsonv2"),
+            ("addressdetails", "1"),
+            ("extratags", "1"),
+            ("accept-language", LANGUAGES.as_str()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    Ok(match response {
+        ReverseResponse::Nothing { .. } => None,
+        ReverseResponse::Found(place) => place.into_poi(),
+    })
+}
+
+/// Nominatim answers `/reverse` with an error object when nothing is there.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ReverseResponse {
+    // First: `Place` has no required field, so it would match the error too.
+    Nothing {
+        #[expect(dead_code, reason = "only tells the two answers apart")]
+        error: String,
+    },
+    Found(Place),
+}
+
 /// The parts of a Nominatim `jsonv2` result that are used.
 #[derive(Deserialize)]
 struct Place {
+    name: Option<String>,
+    osm_type: Option<String>,
+    osm_id: Option<u64>,
+    /// Main OSM key and value, such as `amenity` and `cafe`.
+    category: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    lat: Option<String>,
+    lon: Option<String>,
     #[serde(default)]
     address: Address,
     #[serde(default)]
     extratags: Option<HashMap<String, String>>,
+}
+
+impl Place {
+    /// The place as a POI to select, with its details. Places without a name, such
+    /// as plain addresses, are named after their street.
+    fn into_poi(mut self) -> Option<(Poi, PoiDetails)> {
+        let lat = self.lat.take()?.parse().ok()?;
+        let lon = self.lon.take()?.parse().ok()?;
+        let name = self
+            .name
+            .take()
+            .filter(|name| !name.is_empty())
+            .or_else(|| self.address.street())?;
+
+        let poi = Poi {
+            name,
+            translated_name: None,
+            class: self.category.take(),
+            subclass: self.kind.take(),
+            rank: 0,
+            osm_id: match (self.osm_type.as_deref(), self.osm_id) {
+                (Some("node"), Some(id)) => Some(OsmId::Node(id)),
+                (Some("way"), Some(id)) => Some(OsmId::Way(id)),
+                (Some("relation"), Some(id)) => Some(OsmId::Relation(id)),
+                _ => None,
+            },
+            position: world_position(lat, lon),
+        };
+        Some((poi, PoiDetails::from(self)))
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -83,14 +169,32 @@ struct Address {
     city: Option<String>,
     town: Option<String>,
     village: Option<String>,
+    country_code: Option<String>,
 }
 
 impl Address {
+    /// Street and house number, in the order used in the country.
+    fn street(&self) -> Option<String> {
+        let road = self
+            .road
+            .clone()
+            .or_else(|| self.pedestrian.clone())
+            .or_else(|| self.square.clone());
+        let number = self.house_number.clone();
+
+        let number_first = self
+            .country_code
+            .as_deref()
+            .is_some_and(|code| NUMBER_FIRST_COUNTRIES.contains(&code));
+        if number_first {
+            join([number, road], " ")
+        } else {
+            join([road, number], " ")
+        }
+    }
+
     fn format(self) -> Option<String> {
-        let street = join(
-            [self.road.or(self.pedestrian).or(self.square), self.house_number],
-            " ",
-        );
+        let street = self.street();
         let locality = join(
             [self.postcode, self.city.or(self.town).or(self.village)],
             " ",
@@ -174,5 +278,46 @@ mod tests {
             .remove(0);
 
         assert_eq!(PoiDetails::from(place), PoiDetails::default());
+    }
+
+    #[test]
+    fn parses_reverse_address() {
+        // Trimmed `/reverse` response for 10 Rue Malakoff, Brest.
+        let json = r#"{
+            "osm_type": "node",
+            "osm_id": 1693005227,
+            "lat": "48.3960198",
+            "lon": "-4.4834467",
+            "category": "place",
+            "type": "house",
+            "name": "",
+            "address": {
+                "house_number": "10",
+                "road": "Rue Malakoff",
+                "city": "Brest",
+                "postcode": "29200",
+                "country": "France",
+                "country_code": "fr"
+            },
+            "extratags": {}
+        }"#;
+
+        let ReverseResponse::Found(place) = serde_json::from_str(json).unwrap() else {
+            panic!("expected a place");
+        };
+        let (poi, details) = place.into_poi().unwrap();
+
+        assert_eq!(poi.name, "10 Rue Malakoff");
+        assert_eq!(poi.osm_id, Some(OsmId::Node(1693005227)));
+        assert_eq!(poi.subclass.as_deref(), Some("house"));
+        assert_eq!(details.address.as_deref(), Some("10 Rue Malakoff, 29200 Brest"));
+    }
+
+    #[test]
+    fn parses_reverse_nothing() {
+        let response: ReverseResponse =
+            serde_json::from_str(r#"{"error": "Unable to geocode"}"#).unwrap();
+
+        assert!(matches!(response, ReverseResponse::Nothing { .. }));
     }
 }
