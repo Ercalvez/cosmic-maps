@@ -41,7 +41,10 @@ features = [
     # GPU-accelerated rendering
     "wgpu",
     # xdg portal dialogs on Linux
-    "xdg-portal"
+    "xdg-portal",
+    # Native Wayland support, as in COSMIC Store and Settings. Without it, clicking
+    # a segmented control (the directions' travel modes) selects nothing.
+    "wayland",
 ]
 
 # Uncomment to test a locally-cloned libcosmic

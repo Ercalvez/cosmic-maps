@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <circle cx="9" cy="2" r="1.6" fill="#000"/>
+  <path d="M8 4.5 L10.2 5.2 L11.5 7.8 L10.3 8.3 L9.4 6.6 L8.9 9 L10.9 11.2 L11.6 15 L10.1 15.2 L9.4 12 L7.6 10.4 L6.9 12.8 L5 15.3 L3.9 14.4 L5.5 12.2 L6.8 6.3 L5.6 7.1 L5.2 9.2 L3.8 8.9 L4.3 6.2 Z" fill="#000"/>
+</svg>

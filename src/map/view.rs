@@ -68,6 +68,8 @@ pub enum MapEvent {
     Locate,
     /// A link in the place panel, such as a website or a `tel:` URI.
     OpenUrl(String),
+    /// The place panel's Directions button.
+    Directions,
 }
 
 /// Work the map needs the app to do, returned from [`MapView::on_event`].
@@ -85,6 +87,8 @@ pub enum MapAction {
         zoom: u8,
     },
     OpenUrl(String),
+    /// Show the directions form to the selected place.
+    OpenDirections,
 }
 
 /// A click that hit no POI, waiting for [`details::reverse`] to say what is there.
@@ -195,6 +199,7 @@ impl MapView {
                 self.center_on_user();
             }
             MapEvent::OpenUrl(url) => action = Some(MapAction::OpenUrl(url)),
+            MapEvent::Directions => action = Some(MapAction::OpenDirections),
         }
 
         self.request_tiles();
@@ -480,6 +485,16 @@ impl MapView {
         }
     }
 
+    /// The selected place, once known.
+    pub fn selected(&self) -> Option<&Poi> {
+        self.selected.as_ref()
+    }
+
+    /// Where the user is, once known.
+    pub fn user_position(&self) -> Option<Position> {
+        self.user
+    }
+
     /// Whether a place is selected or being looked up, for the place panel.
     pub fn has_place(&self) -> bool {
         self.selected.is_some() || self.lookup.is_some()
@@ -551,6 +566,9 @@ fn place_panel<'a, Message: Clone + 'static>(
         .push_maybe(poi.category().map(widget::text::caption))
         .spacing(2);
 
+    let directions = widget::button::suggested(fl!("directions"))
+        .on_press(on_event(MapEvent::Directions));
+
     let details: Option<Element<'a, Message>> = match details {
         Some(DetailsState::Loading) => {
             Some(widget::text::caption(fl!("poi-details-loading")).into())
@@ -559,8 +577,9 @@ fn place_panel<'a, Message: Clone + 'static>(
         Some(DetailsState::Unavailable) | None => None,
     };
 
-    widget::column::with_capacity(3)
+    widget::column::with_capacity(4)
         .push(names)
+        .push(directions)
         .push_maybe(details.is_some().then(widget::divider::horizontal::default))
         .push_maybe(details)
         .spacing(spacing.space_xs)

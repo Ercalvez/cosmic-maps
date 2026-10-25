@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::config::Config;
+use crate::directions::Directions;
 use crate::fl;
 use crate::map::details::{self, PoiDetails};
 use crate::map::location::{self, Position};
@@ -8,23 +9,19 @@ use crate::map::style::MapPalette;
 use crate::map::poi::{OsmId, Poi};
 use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
+use crate::search_box::{SEARCH_DELAY, SearchBox, SearchTarget, Submit};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::futures::StreamExt;
 use cosmic::iced::{Length, Subscription, event, keyboard};
 use cosmic::prelude::*;
-use cosmic::widget::{self, about::About, icon, menu, popover};
+use cosmic::widget::{self, about::About, icon, menu, popover, segmented_button};
 use std::collections::HashMap;
-use std::time::Duration;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
 /// Distance the map moves per arrow key press, in pixels.
 const PAN_STEP: f64 = 128.0;
-/// Pause after typing before searching, and the shortest query searched, as in
-/// GNOME Maps.
-const SEARCH_DELAY: Duration = Duration::from_millis(500);
-const SEARCH_MIN_CHARS: usize = 3;
 /// Width of the search field, as in other COSMIC apps.
 const SEARCH_INPUT_WIDTH: f32 = 240.0;
 const SEARCH_RESULTS_WIDTH: f32 = 360.0;
@@ -47,12 +44,9 @@ pub struct AppModel {
     /// Search field in the header bar, shown with its button or Ctrl+F.
     search_id: widget::Id,
     search_active: bool,
-    search_input: String,
-    search_results: Vec<SearchResult>,
-    /// Result chosen with the arrow keys.
-    search_highlight: Option<usize>,
-    /// Enter was pressed before results arrived: pick the first one when they do.
-    search_submitted: bool,
+    search: SearchBox,
+    /// The directions form, while shown in the context drawer.
+    directions: Option<Directions>,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -70,12 +64,15 @@ pub enum Message {
     Reverse(u64, Result<Option<(Poi, PoiDetails)>, details::Error>),
     SearchActivate,
     SearchClear,
-    SearchInput(String),
+    SearchInput(SearchTarget, String),
     /// Sent `SEARCH_DELAY` after typing; searches if the text is still the same.
-    SearchDebounced(String),
-    SearchSubmit,
-    SearchResults(String, Result<Vec<SearchResult>, details::Error>),
-    SearchSelect(usize),
+    SearchDebounced(SearchTarget, String),
+    SearchSubmit(SearchTarget),
+    SearchResults(SearchTarget, String, Result<Vec<SearchResult>, details::Error>),
+    SearchSelect(SearchTarget, usize),
+    DirectionsMode(segmented_button::Entity),
+    DirectionsSwap,
+    DirectionsBack,
     Arrow(Arrow),
 }
 
@@ -150,10 +147,8 @@ impl cosmic::Application for AppModel {
             map,
             search_id: widget::Id::unique(),
             search_active: false,
-            search_input: String::new(),
-            search_results: Vec::new(),
-            search_highlight: None,
-            search_submitted: false,
+            search: SearchBox::default(),
+            directions: None,
         };
 
         // Set the window title, and turn each rendered tile into a message for as
@@ -184,17 +179,17 @@ impl cosmic::Application for AppModel {
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
         let search = if self.search_active {
             let input =
-                widget::text_input::search_input(fl!("search-placeholder"), &self.search_input)
+                widget::text_input::search_input(fl!("search-placeholder"), &self.search.input)
                     .width(Length::Fixed(SEARCH_INPUT_WIDTH))
                     .id(self.search_id.clone())
                     .on_clear(Message::SearchClear)
-                    .on_input(Message::SearchInput)
-                    .on_submit(|_| Message::SearchSubmit);
+                    .on_input(|text| Message::SearchInput(SearchTarget::Header, text))
+                    .on_submit(|_| Message::SearchSubmit(SearchTarget::Header));
 
             // Results drop down under the field, kept inside the window. No
             // `on_close`: it also fires for presses on the results themselves.
             let mut search = popover(input);
-            if !self.search_results.is_empty() {
+            if !self.search.results.is_empty() {
                 search = search
                     .popup(self.search_results_view())
                     .position(popover::Position::Bottom);
@@ -251,6 +246,20 @@ impl cosmic::Application for AppModel {
                 self.map.place_panel(Message::Map)?,
                 Message::Map(MapEvent::ClosePanel),
             ),
+            ContextPage::Directions => {
+                let back = widget::tooltip(
+                    widget::button::icon(icon::from_name("go-previous-symbolic"))
+                        .on_press(Message::DirectionsBack),
+                    widget::text::body(fl!("directions-back")),
+                    widget::tooltip::Position::Bottom,
+                );
+                context_drawer::context_drawer(
+                    self.directions.as_ref()?.view(),
+                    Message::Map(MapEvent::ClosePanel),
+                )
+                .title(fl!("directions"))
+                .actions(back)
+            }
         })
     }
 
@@ -322,10 +331,16 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::Map(event) => {
-                // Clicking the map hides search results, keeping the query.
+                // Clicking the map hides search results, keeping the queries.
                 if matches!(event, MapEvent::Click(_)) {
-                    self.search_results.clear();
-                    self.search_highlight = None;
+                    self.search.hide_results();
+                    if let Some(directions) = &mut self.directions {
+                        directions.hide_results();
+                    }
+                }
+                // Closing the drawer also closes the directions form.
+                if matches!(event, MapEvent::ClosePanel) {
+                    self.directions = None;
                 }
                 let changes_place = matches!(event, MapEvent::Click(_) | MapEvent::ClosePanel);
                 let action = self.map.on_event(event);
@@ -342,92 +357,114 @@ impl cosmic::Application for AppModel {
 
             Message::SearchClear => {
                 self.search_active = false;
-                self.search_input.clear();
-                self.search_results.clear();
-                self.search_highlight = None;
-                self.search_submitted = false;
+                self.search.clear();
             }
 
-            Message::SearchInput(input) => {
-                self.search_input = input.clone();
-                self.search_highlight = None;
-                if input.trim().chars().count() < SEARCH_MIN_CHARS {
-                    self.search_results.clear();
-                    self.search_submitted = false;
-                    return Task::none();
+            Message::SearchInput(target, text) => {
+                let query = match target {
+                    SearchTarget::Header => self.search.on_input(text),
+                    SearchTarget::From | SearchTarget::To => self
+                        .directions
+                        .as_mut()
+                        .and_then(|directions| directions.on_input(target, text)),
+                };
+                if let Some(query) = query {
+                    return cosmic::task::future(async move {
+                        tokio::time::sleep(SEARCH_DELAY).await;
+                        Message::SearchDebounced(target, query)
+                    });
                 }
-                return cosmic::task::future(async move {
-                    tokio::time::sleep(SEARCH_DELAY).await;
-                    Message::SearchDebounced(input)
-                });
             }
 
-            Message::SearchDebounced(input) => {
+            Message::SearchDebounced(target, query) => {
                 // Typing continued: a later message will search.
-                if input == self.search_input {
-                    return self.search(input);
+                if self
+                    .search_box_mut(target)
+                    .is_some_and(|search| search.is_current(&query))
+                {
+                    return self.search(target, query);
                 }
             }
 
-            Message::SearchSubmit => {
-                let chosen = self
-                    .search_highlight
-                    .or((!self.search_results.is_empty()).then_some(0));
-                if let Some(index) = chosen {
-                    return self.update(Message::SearchSelect(index));
-                }
-                if !self.search_input.trim().is_empty() {
-                    self.search_submitted = true;
-                    return self.search(self.search_input.clone());
+            Message::SearchSubmit(target) => {
+                let Some(search) = self.search_box_mut(target) else {
+                    return Task::none();
+                };
+                match search.submit() {
+                    Submit::Pick(index) => return self.update(Message::SearchSelect(target, index)),
+                    Submit::Search(query) => return self.search(target, query),
+                    Submit::Nothing => {}
                 }
             }
 
-            Message::SearchResults(input, result) => {
+            Message::SearchResults(target, query, result) => {
+                let Some(search) = self.search_box_mut(target) else {
+                    return Task::none();
+                };
                 // Results for text that has changed since are stale.
-                if input != self.search_input {
+                if !search.is_current(&query) {
                     return Task::none();
                 }
                 match result {
                     Ok(results) => {
-                        self.search_results = results;
-                        self.search_highlight = None;
-                        if std::mem::take(&mut self.search_submitted)
-                            && !self.search_results.is_empty()
-                        {
-                            return self.update(Message::SearchSelect(0));
+                        if let Some(index) = search.set_results(results) {
+                            return self.update(Message::SearchSelect(target, index));
                         }
                     }
-                    Err(err) => eprintln!("search for {input:?} failed: {err:?}"),
+                    Err(err) => eprintln!("search for {query:?} failed: {err:?}"),
                 }
             }
 
-            Message::SearchSelect(index) => {
-                let Some(result) = self.search_results.get(index).cloned() else {
+            Message::SearchSelect(target, index) => {
+                let Some(result) = self.search_box_mut(target).and_then(|search| search.take(index))
+                else {
                     return Task::none();
                 };
-                // Keep the query, so it can be refined.
-                self.search_results.clear();
-                self.search_highlight = None;
-                let action = self.map.show_place(result.poi);
-                self.sync_place_drawer();
-                return self.run_map_action(action);
+                match target {
+                    SearchTarget::Header => {
+                        let action = self.map.show_place(result.poi);
+                        self.sync_place_drawer();
+                        return self.run_map_action(action);
+                    }
+                    SearchTarget::From | SearchTarget::To => {
+                        if let Some(directions) = &mut self.directions {
+                            directions.pick(target, result.poi);
+                        }
+                    }
+                }
+            }
+
+            Message::DirectionsMode(mode) => {
+                if let Some(directions) = &mut self.directions {
+                    directions.select_mode(mode);
+                }
+            }
+
+            Message::DirectionsSwap => {
+                if let Some(directions) = &mut self.directions {
+                    directions.swap();
+                }
+            }
+
+            Message::DirectionsBack => {
+                self.directions = None;
+                self.context_page = ContextPage::Place;
+                self.core.window.show_context = self.map.has_place();
             }
 
             Message::Arrow(arrow) => {
-                // Up and down move through search results while they are shown.
-                let results = self.search_results.len();
-                if self.search_active && results > 0 {
-                    match arrow {
-                        Arrow::Down => {
-                            self.search_highlight =
-                                Some(self.search_highlight.map_or(0, |i| (i + 1).min(results - 1)));
-                            return Task::none();
-                        }
-                        Arrow::Up => {
-                            self.search_highlight = self.search_highlight.map(|i| i.saturating_sub(1));
-                            return Task::none();
-                        }
-                        Arrow::Left | Arrow::Right => {}
+                // Up and down move through the search results shown, if any.
+                if let Arrow::Up | Arrow::Down = arrow {
+                    let down = matches!(arrow, Arrow::Down);
+                    let header = self.search_active && self.search.move_highlight(down);
+                    let directions = !header
+                        && self
+                            .directions
+                            .as_mut()
+                            .and_then(Directions::searching_mut)
+                            .is_some_and(|search| search.move_highlight(down));
+                    if header || directions {
+                        return Task::none();
                     }
                 }
 
@@ -447,6 +484,9 @@ impl cosmic::Application for AppModel {
 
             Message::Location(Ok(position)) => {
                 self.map.set_position(position);
+                if let Some(directions) = &mut self.directions {
+                    directions.user_position_known(position);
+                }
             }
 
             Message::Location(Err(err)) => {
@@ -491,14 +531,32 @@ impl cosmic::Application for AppModel {
 impl AppModel {
     /// Shows the place drawer while a place is selected, and hides it otherwise.
     /// Called when the selection may have changed, so that panning or the About
-    /// drawer do not bring it back.
+    /// drawer do not bring it back. While the directions form is open, a newly
+    /// selected place becomes its destination instead.
     fn sync_place_drawer(&mut self) {
+        if let Some(directions) = &mut self.directions {
+            if let Some(place) = self.map.selected() {
+                directions.set_destination(place.clone());
+            }
+            return;
+        }
+
         if self.map.has_place() {
             self.context_page = ContextPage::Place;
             self.core.window.show_context = true;
         } else if self.context_page == ContextPage::Place {
             self.core.window.show_context = false;
         }
+    }
+
+    /// Opens the directions form, from the user's position to the selected place.
+    fn open_directions(&mut self) {
+        let Some(place) = self.map.selected() else {
+            return;
+        };
+        self.directions = Some(Directions::new(place, self.map.user_position()));
+        self.context_page = ContextPage::Directions;
+        self.core.window.show_context = true;
     }
 
     /// Carries out work the map asked for.
@@ -518,58 +576,46 @@ impl AppModel {
             Some(MapAction::OpenUrl(url)) => {
                 cosmic::Application::update(self, Message::LaunchUrl(url))
             }
+            Some(MapAction::OpenDirections) => {
+                self.open_directions();
+                Task::none()
+            }
             None => Task::none(),
         }
     }
 
+    /// The search box behind a search field, if that field is shown.
+    fn search_box_mut(&mut self, target: SearchTarget) -> Option<&mut SearchBox> {
+        match target {
+            SearchTarget::Header => Some(&mut self.search),
+            SearchTarget::From | SearchTarget::To => self.directions.as_mut()?.search_mut(target),
+        }
+    }
+
     /// Searches places for `query`, preferring those near the center of the map.
-    fn search(&self, query: String) -> Task<cosmic::Action<Message>> {
+    fn search(&self, target: SearchTarget, query: String) -> Task<cosmic::Action<Message>> {
         let near = self.map.center();
         cosmic::task::future(async move {
             let result = search::search(query.clone(), near).await;
-            Message::SearchResults(query, result)
+            Message::SearchResults(target, query, result)
         })
     }
 
-    /// Search results, shown under the search field.
+    /// Header search results, shown under the search field.
     fn search_results_view(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let radius = cosmic::theme::active().cosmic().corner_radii.radius_s;
 
-        let rows: Vec<Element<'_, Message>> = self
-            .search_results
-            .iter()
-            .enumerate()
-            .map(|(index, result)| {
-                let caption = [result.poi.category(), result.area.clone()]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                let content = widget::column::with_capacity(2)
-                    .push(widget::text::body(&result.poi.name))
-                    .push_maybe((!caption.is_empty()).then(|| widget::text::caption(caption)))
-                    .spacing(2);
-
-                // `ListItem`, unlike `MenuItem`, shows the row chosen with the arrow keys.
-                widget::button::custom(content)
-                    .class(cosmic::theme::Button::ListItem(radius))
-                    .selected(self.search_highlight == Some(index))
-                    .width(Length::Fill)
-                    .padding([spacing.space_xxs, spacing.space_s])
-                    .on_press(Message::SearchSelect(index))
-                    .into()
-            })
-            .collect();
-
-        widget::container(widget::column::with_children(rows).spacing(spacing.space_xxxs))
-            .padding(spacing.space_xxs)
-            .width(Length::Fixed(SEARCH_RESULTS_WIDTH))
-            .class(cosmic::theme::Container::Dropdown)
-            .apply(widget::container)
-            // A small gap, so the list does not touch the field.
-            .padding([spacing.space_xxs, 0, 0, 0])
-            .into()
+        widget::container(
+            self.search
+                .results_view(|index| Message::SearchSelect(SearchTarget::Header, index)),
+        )
+        .padding(spacing.space_xxs)
+        .width(Length::Fixed(SEARCH_RESULTS_WIDTH))
+        .class(cosmic::theme::Container::Dropdown)
+        .apply(widget::container)
+        // A small gap, so the list does not touch the field.
+        .padding([spacing.space_xxs, 0, 0, 0])
+        .into()
     }
 
     /// Updates the header and window titles.
@@ -591,6 +637,8 @@ pub enum ContextPage {
     About,
     /// The place selected on the map.
     Place,
+    /// The directions form, to the selected place.
+    Directions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
