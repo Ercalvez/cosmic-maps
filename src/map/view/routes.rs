@@ -73,7 +73,8 @@ fn round_stroke<'a>(color: Color, width: f32) -> canvas::Stroke<'a> {
 }
 
 /// The routes found: the others faint, then the chosen one on top, its walking
-/// parts dotted and its transit legs in their lines' colours.
+/// parts dotted, cycling and driving solid, and its transit legs in their lines'
+/// colours.
 pub(super) fn draw_routes(
     frame: &mut Frame,
     camera: &Camera,
@@ -129,7 +130,7 @@ pub(super) fn draw_route_stops(
         frame.stroke(&circle, canvas::Stroke::default().with_color(ring).with_width(2.0));
     };
 
-    for leg in itinerary.legs.iter().filter(|leg| !leg.is_walk()) {
+    for leg in itinerary.legs.iter().filter(|leg| leg.is_transit()) {
         let color = leg.line.as_ref().and_then(|line| line.color).unwrap_or(accent);
         for stop in &leg.stops {
             dot(frame, stop.position, ROUTE_STOP_RADIUS, palette.land, color);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! How routes are shown in the directions drawer: the options found, the legs of
-//! the chosen one, and walking steps.
+//! the chosen one, and turn-by-turn steps.
 
 use std::collections::HashSet;
 
@@ -21,7 +21,8 @@ const OSM_COPYRIGHT: &str = "https://www.openstreetmap.org/copyright";
 /// Which route of a plan is chosen, to show its details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteChoice {
-    Walk,
+    /// The route all the way by street.
+    Direct,
     Transit(usize),
 }
 
@@ -31,8 +32,8 @@ pub struct Ends<'a> {
     pub destination: &'a str,
 }
 
-/// The routes of a plan. Walking shows its single route in full; transit lists
-/// the options, with the legs of the chosen one under it. `open_stops` holds the
+/// The routes of a plan. Walking, cycling and driving show their single route in
+/// full; transit lists the options, with the legs of the chosen one under it. `open_stops` holds the
 /// legs of the chosen option whose stops are listed.
 pub fn plan_view<'a>(
     plan: &'a Plan,
@@ -43,24 +44,25 @@ pub fn plan_view<'a>(
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
 
-    if mode == RouteMode::Walk {
-        let Some(walk) = &plan.walk else {
+    if mode != RouteMode::Transit {
+        let Some(direct) = &plan.direct else {
             return widget::column::with_capacity(0).into();
         };
-        let summary = [format_duration(walk.duration), format_distance(walk_distance(walk))];
+        let summary = [format_duration(direct.duration), format_distance(street_distance(direct))];
         return widget::column::with_capacity(2)
             .push(widget::text::heading(summary.join(" · ")))
-            .push_maybe(steps_view(walk))
+            .push_maybe(steps_view(direct))
             .spacing(spacing.space_s)
             .into();
     }
 
     let mut options =
         widget::column::with_capacity(2 * plan.transit.len() + 2).spacing(spacing.space_xs);
-    if let Some(walk) = &plan.walk {
-        let is_chosen = chosen == Some(RouteChoice::Walk);
+    // In transit plans, the route all the way by street is walking.
+    if let Some(walk) = &plan.direct {
+        let is_chosen = chosen == Some(RouteChoice::Direct);
         options = options
-            .push(option(walk_option(walk), RouteChoice::Walk, is_chosen))
+            .push(option(walk_option(walk), RouteChoice::Direct, is_chosen))
             .push_maybe(is_chosen.then(|| steps_view(walk)).flatten());
     }
     for (index, itinerary) in plan.transit.iter().enumerate() {
@@ -114,7 +116,7 @@ fn option<'a>(
 fn walk_option<'a>(walk: &Itinerary) -> Element<'a, Message> {
     widget::column::with_capacity(2)
         .push(heading_row(fl!("route-walk-only"), format_duration(walk.duration)))
-        .push(widget::text::caption(format_distance(walk_distance(walk))))
+        .push(widget::text::caption(format_distance(street_distance(walk))))
         .spacing(2)
         .into()
 }
@@ -130,7 +132,7 @@ fn transit_option<'a>(itinerary: &'a Itinerary) -> Element<'a, Message> {
     let mut lines = widget::row::with_capacity(2 * itinerary.legs.len())
         .spacing(cosmic::theme::spacing().space_xxs)
         .align_y(Alignment::Center);
-    for (index, leg) in itinerary.legs.iter().filter(|leg| !leg.is_walk()).enumerate() {
+    for (index, leg) in itinerary.legs.iter().filter(|leg| leg.is_transit()).enumerate() {
         if index > 0 {
             lines = lines.push(widget::text::caption("›"));
         }
@@ -317,10 +319,10 @@ fn stop_name(name: &str, ends: &Ends<'_>) -> String {
     }
 }
 
-/// Turn-by-turn steps of a walk, or `None` when they say nothing more than "go
-/// there", as for routes where every step is an unnamed "continue".
-fn steps_view<'a>(walk: &Itinerary) -> Option<Element<'a, Message>> {
-    let steps = merged_steps(walk.legs.iter().flat_map(|leg| &leg.steps));
+/// Turn-by-turn steps of a route by street, or `None` when they say nothing more
+/// than "go there", as for routes where every step is an unnamed "continue".
+fn steps_view<'a>(route: &Itinerary) -> Option<Element<'a, Message>> {
+    let steps = merged_steps(route.legs.iter().flat_map(|leg| &leg.steps));
     if steps.len() <= 1 && steps.iter().all(|step| step.street.is_empty()) {
         return None;
     }
@@ -388,8 +390,9 @@ fn instruction(step: &Step) -> String {
     }
 }
 
-fn walk_distance(walk: &Itinerary) -> f64 {
-    walk.legs.iter().filter_map(|leg| leg.distance).sum()
+/// Distance covered by street, in meters.
+fn street_distance(route: &Itinerary) -> f64 {
+    route.legs.iter().filter_map(|leg| leg.distance).sum()
 }
 
 /// The kind of vehicle of a MOTIS mode, or `None` if the line name says enough.
@@ -422,14 +425,15 @@ fn format_duration(seconds: u64) -> String {
     }
 }
 
-/// "850 m", or "1.4 km" from a kilometre.
+/// "850 m", "1.4 km", or "466 km" from 100 km.
 fn format_distance(meters: f64) -> String {
     if meters < 1000.0 {
         // To the nearest 10 m: walking distances are estimates.
         let meters = ((meters / 10.0).round() * 10.0) as u64;
         fl!("route-meters", meters = meters)
     } else {
-        let kilometers = format!("{:.1}", meters / 1000.0);
+        let decimals = if meters < 100_000.0 { 1 } else { 0 };
+        let kilometers = format!("{:.*}", decimals, meters / 1000.0);
         fl!("route-kilometers", kilometers = kilometers)
     }
 }
@@ -452,6 +456,8 @@ mod tests {
         assert_eq!(format_duration(3900), fl!("route-hours", hours = 1, minutes = "05"));
         assert_eq!(format_distance(847.0), fl!("route-meters", meters = 850));
         assert_eq!(format_distance(1358.0), fl!("route-kilometers", kilometers = "1.4"));
+        // Paris → Lyon by car.
+        assert_eq!(format_distance(465_696.0), fl!("route-kilometers", kilometers = "466"));
     }
 
     #[test]

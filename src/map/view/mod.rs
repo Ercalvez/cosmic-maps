@@ -142,6 +142,8 @@ pub struct MapView {
     user: Option<Position>,
     /// The map re-centres on each new position until the user moves it.
     following_user: bool,
+    /// The routes are to be framed once the map knows its size.
+    fit_pending: bool,
     /// Directions results, while shown.
     routes: Option<RouteOverlay>,
 }
@@ -171,6 +173,7 @@ impl MapView {
             wanted: Vec::new(),
             user: None,
             following_user: true,
+            fit_pending: false,
             routes: None,
         };
 
@@ -190,7 +193,12 @@ impl MapView {
                 let anchor = anchor.unwrap_or(Point::new(self.viewport.width / 2.0, self.viewport.height / 2.0));
                 self.camera.zoom_at(delta, anchor, self.viewport);
             }
-            MapEvent::Resized(size) => self.viewport = size,
+            MapEvent::Resized(size) => {
+                self.viewport = size;
+                if std::mem::take(&mut self.fit_pending) {
+                    self.fit_route();
+                }
+            }
             // Every click shows what is there; the panel closes with its own button.
             MapEvent::Click(point) => {
                 if let Some(poi) = self.poi_at(point) {
@@ -518,14 +526,14 @@ impl MapView {
         let Some((min, max)) = bounds(routes.itineraries.iter().flat_map(route_points)) else {
             return;
         };
-        let viewport = if self.viewport.width > 0.0 {
-            self.viewport
-        } else {
-            Size::new(DEFAULT_SPAN, DEFAULT_SPAN)
-        };
 
         self.following_user = false;
-        self.camera = Camera::fitting(min, max, viewport, ROUTE_PADDING);
+        // Before the first layout, a guessed size would frame them too closely.
+        if self.viewport.width <= 0.0 || self.viewport.height <= 0.0 {
+            self.fit_pending = true;
+            return;
+        }
+        self.camera = Camera::fitting(min, max, self.viewport, ROUTE_PADDING);
         self.request_tiles();
     }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Walking and public transit routes from Transitous, the community-run MOTIS
-//! service GNOME Maps also uses for public transit.
+//! Walking, cycling, driving and public transit routes from Transitous, the
+//! community-run MOTIS service GNOME Maps also uses for public transit.
 //!
 //! Usage policy (transitous.org/api): open-source, non-commercial apps sending a
 //! `User-Agent` with a contact, with visible attribution of transitous.org/sources
@@ -26,15 +26,40 @@ static TRANSITOUS: RateLimit = RateLimit::new(Duration::from_secs(1));
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteMode {
     Walk,
+    Bike,
+    Car,
+    /// Public transit, with walking to and between stops.
     Transit,
+}
+
+impl RouteMode {
+    /// The MOTIS mode of the route all the way by street.
+    fn direct_mode(self) -> &'static str {
+        match self {
+            Self::Walk | Self::Transit => "WALK",
+            Self::Bike => "BIKE",
+            Self::Car => "CAR",
+        }
+    }
+
+    /// Longest route all the way by street searched, in seconds. The server's
+    /// default of 30 minutes leaves out walks across a city.
+    fn max_direct_time(self) -> &'static str {
+        match self {
+            Self::Walk | Self::Transit => "7200",
+            Self::Bike => "14400",
+            Self::Car => "43200",
+        }
+    }
 }
 
 /// The routes found between two places.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Plan {
-    /// Walking all the way, if possible.
-    pub walk: Option<Itinerary>,
-    /// Public transit options, empty for walking requests.
+    /// The route all the way by street, in the requested mode (walking for
+    /// transit), if possible.
+    pub direct: Option<Itinerary>,
+    /// Public transit options, empty for other modes.
     pub transit: Vec<Itinerary>,
     /// Cursors for transit options leaving earlier or later, passed back to [`plan`].
     pub earlier: Option<String>,
@@ -45,8 +70,8 @@ impl Plan {
     /// Whether nothing was found for `mode`.
     pub fn is_empty(&self, mode: RouteMode) -> bool {
         match mode {
-            RouteMode::Walk => self.walk.is_none(),
-            RouteMode::Transit => self.walk.is_none() && self.transit.is_empty(),
+            RouteMode::Walk | RouteMode::Bike | RouteMode::Car => self.direct.is_none(),
+            RouteMode::Transit => self.direct.is_none() && self.transit.is_empty(),
         }
     }
 }
@@ -63,7 +88,7 @@ pub struct Itinerary {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Leg {
-    /// MOTIS mode, such as `WALK`, `BUS`, `TRAM` or `REGIONAL_RAIL`.
+    /// MOTIS mode, such as `WALK`, `BIKE`, `CAR`, `BUS`, `TRAM` or `REGIONAL_RAIL`.
     pub mode: String,
     pub from: Stop,
     pub to: Stop,
@@ -71,7 +96,7 @@ pub struct Leg {
     pub end_time: Timestamp,
     /// In seconds.
     pub duration: u64,
-    /// In meters, for walking legs.
+    /// In meters, for street legs.
     pub distance: Option<f64>,
     /// The line taken, for transit legs.
     pub line: Option<Line>,
@@ -79,13 +104,18 @@ pub struct Leg {
     pub stops: Vec<PassedStop>,
     /// The leg's path, in Web Mercator coordinates spanning 0..1.
     pub path: Vec<(f64, f64)>,
-    /// Turn-by-turn instructions, for walking legs.
+    /// Turn-by-turn instructions, for street legs.
     pub steps: Vec<Step>,
 }
 
 impl Leg {
     pub fn is_walk(&self) -> bool {
         self.mode == "WALK"
+    }
+
+    /// On a public transit line, rather than walking, cycling or driving.
+    pub fn is_transit(&self) -> bool {
+        is_transit_mode(&self.mode)
     }
 }
 
@@ -138,25 +168,9 @@ pub async fn plan(
 ) -> Result<Plan, Error> {
     TRANSITOUS.wait_turn().await;
 
-    let from = format!("{},{}", from.0, from.1);
-    let to = format!("{},{}", to.0, to.1);
-    // No transit modes: only the direct walking route is computed.
-    let transit_modes = match mode {
-        RouteMode::Walk => "",
-        RouteMode::Transit => "TRANSIT",
-    };
-    let mut query = vec![
-        ("fromPlace", from.as_str()),
-        ("toPlace", to.as_str()),
-        ("directModes", "WALK"),
-        ("transitModes", transit_modes),
-    ];
-    if let Some(page) = &page {
-        query.push(("pageCursor", page.as_str()));
-    }
     let response: Response = CLIENT
         .get(PLAN_URL)
-        .query(&query)
+        .query(&query(from, to, mode, page))
         .send()
         .await?
         .error_for_status()?
@@ -164,6 +178,37 @@ pub async fn plan(
         .await?;
 
     Ok(response.into_plan())
+}
+
+/// The `/plan` query parameters.
+fn query(
+    from: (f64, f64),
+    to: (f64, f64),
+    mode: RouteMode,
+    page: Option<String>,
+) -> Vec<(&'static str, String)> {
+    // Without transit modes, only the route all the way by street is computed.
+    let transit_modes = if mode == RouteMode::Transit { "TRANSIT" } else { "" };
+    let mut query = vec![
+        ("fromPlace", format!("{},{}", from.0, from.1)),
+        ("toPlace", format!("{},{}", to.0, to.1)),
+        ("directModes", mode.direct_mode().to_owned()),
+        ("transitModes", transit_modes.to_owned()),
+        ("maxDirectTime", mode.max_direct_time().to_owned()),
+    ];
+    if mode == RouteMode::Bike {
+        // Flatter streets when the detour is small.
+        query.push(("elevationCosts", "LOW".to_owned()));
+    }
+    if let Some(page) = page {
+        query.push(("pageCursor", page));
+    }
+    query
+}
+
+/// Whether a MOTIS leg mode is a public transit one.
+fn is_transit_mode(mode: &str) -> bool {
+    !matches!(mode, "WALK" | "BIKE" | "CAR")
 }
 
 /// The parts of a MOTIS `/api/v6/plan` response that are used.
@@ -244,7 +289,7 @@ struct RawStep {
 impl Response {
     fn into_plan(self) -> Plan {
         Plan {
-            walk: self.direct.into_iter().next().map(RawItinerary::into_itinerary),
+            direct: self.direct.into_iter().next().map(RawItinerary::into_itinerary),
             transit: self
                 .itineraries
                 .into_iter()
@@ -270,8 +315,7 @@ impl RawItinerary {
 
 impl RawLeg {
     fn into_leg(self) -> Leg {
-        let is_transit = self.mode != "WALK";
-        let line = is_transit.then(|| Line {
+        let line = is_transit_mode(&self.mode).then(|| Line {
             name: self.route_short_name,
             color: self.route_color.as_deref().and_then(hex_color),
             text_color: self.route_text_color.as_deref().and_then(hex_color),
@@ -431,7 +475,7 @@ mod tests {
         assert!(!plan.is_empty(RouteMode::Transit));
         assert_eq!(plan.later.as_deref(), Some("LATER|1792940820"));
 
-        let walk = plan.walk.unwrap();
+        let walk = plan.direct.unwrap();
         assert_eq!(walk.duration, 1159);
         assert_eq!(walk.start_time, "2026-10-25T14:56:00Z".parse::<Timestamp>().unwrap());
         let leg = &walk.legs[0];
@@ -443,7 +487,7 @@ mod tests {
         assert_eq!(leg.steps[0].distance, 15.0);
 
         let metro = &plan.transit[0].legs[0];
-        assert!(!metro.is_walk());
+        assert!(!metro.is_walk() && metro.is_transit());
         assert_eq!(metro.from.name, "Louvre - Rivoli");
         let line = metro.line.as_ref().unwrap();
         assert_eq!(line.name.as_deref(), Some("1"));
@@ -467,5 +511,60 @@ mod tests {
 
         assert_eq!(plan, Plan::default());
         assert!(plan.is_empty(RouteMode::Walk) && plan.is_empty(RouteMode::Transit));
+    }
+
+    #[test]
+    fn parses_bike_routes() {
+        // Trimmed response for Musée du Louvre → Gare de Lyon, Paris, by bike.
+        let json = r#"{
+            "direct": [{
+                "duration": 936, "startTime": "2026-10-25T16:00:00Z",
+                "endTime": "2026-10-25T16:15:36Z",
+                "legs": [{
+                    "mode": "BIKE", "duration": 936, "distance": 3724.0,
+                    "startTime": "2026-10-25T16:00:00Z", "endTime": "2026-10-25T16:15:36Z",
+                    "from": {"name": "START", "lat": 48.8606, "lon": 2.3376},
+                    "to": {"name": "END", "lat": 48.8443, "lon": 2.3744},
+                    "legGeometry": {"points": "_p~iF~ps|U_ulLnnqC_mqNvxq`@", "precision": 5, "length": 3},
+                    "steps": [{"relativeDirection": "CONTINUE", "distance": 14.0, "streetName": "Rue de Rivoli"}]
+                }]
+            }],
+            "itineraries": []
+        }"#;
+
+        let plan = serde_json::from_str::<Response>(json).unwrap().into_plan();
+
+        assert!(!plan.is_empty(RouteMode::Bike));
+        let leg = &plan.direct.unwrap().legs[0];
+        assert!(!leg.is_walk() && !leg.is_transit());
+        assert_eq!(leg.line, None);
+        assert_eq!(leg.distance, Some(3724.0));
+        assert_eq!(leg.steps[0].street, "Rue de Rivoli");
+    }
+
+    #[test]
+    fn queries_follow_the_mode() {
+        let louvre = (48.8606, 2.3376);
+        let gare_de_lyon = (48.8443, 2.3744);
+        let param = |mode, key| {
+            query(louvre, gare_de_lyon, mode, None)
+                .into_iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| value)
+        };
+
+        assert_eq!(param(RouteMode::Walk, "directModes").as_deref(), Some("WALK"));
+        assert_eq!(param(RouteMode::Walk, "transitModes").as_deref(), Some(""));
+        assert_eq!(param(RouteMode::Transit, "directModes").as_deref(), Some("WALK"));
+        assert_eq!(param(RouteMode::Transit, "transitModes").as_deref(), Some("TRANSIT"));
+        assert_eq!(param(RouteMode::Bike, "directModes").as_deref(), Some("BIKE"));
+        assert_eq!(param(RouteMode::Bike, "elevationCosts").as_deref(), Some("LOW"));
+        assert_eq!(param(RouteMode::Car, "directModes").as_deref(), Some("CAR"));
+        assert_eq!(param(RouteMode::Car, "elevationCosts"), None);
+        assert_eq!(param(RouteMode::Car, "maxDirectTime").as_deref(), Some("43200"));
+        assert_eq!(param(RouteMode::Walk, "fromPlace").as_deref(), Some("48.8606,2.3376"));
+
+        let page = query(louvre, gare_de_lyon, RouteMode::Transit, Some("LATER|1".to_owned()));
+        assert!(page.contains(&("pageCursor", "LATER|1".to_owned())));
     }
 }

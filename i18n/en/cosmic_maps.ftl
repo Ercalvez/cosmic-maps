@@ -29,7 +29,6 @@ travel-mode-car = Car
 route-loading = Finding routes…
 route-not-found = No route found.
 route-failed = Could not find routes. Check your connection.
-route-unavailable = Routes for this mode are not available yet.
 route-earlier = Earlier
 route-later = Later
 route-minutes = { $minutes } min

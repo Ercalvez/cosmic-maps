@@ -87,12 +87,12 @@ impl TravelMode {
         handle.icon()
     }
 
-    /// How routes are found for this mode, or `None` when not supported yet.
-    fn route_mode(self) -> Option<RouteMode> {
+    fn route_mode(self) -> RouteMode {
         match self {
-            Self::Foot => Some(RouteMode::Walk),
-            Self::Transit => Some(RouteMode::Transit),
-            Self::Bike | Self::Car => None,
+            Self::Foot => RouteMode::Walk,
+            Self::Bike => RouteMode::Bike,
+            Self::Transit => RouteMode::Transit,
+            Self::Car => RouteMode::Car,
         }
     }
 }
@@ -120,8 +120,6 @@ impl Endpoint {
 pub enum RouteState {
     /// The start or destination is missing.
     Idle,
-    /// The selected mode cannot be routed yet.
-    Unavailable,
     Loading,
     Found(Plan),
     NotFound,
@@ -345,13 +343,9 @@ impl Directions {
     }
 
     /// Updates the routes after a change to the form. Returns the search to run
-    /// when the trip changed and can be routed.
+    /// when the trip changed and has both ends.
     fn route_request(&mut self) -> Option<RouteRequest> {
-        let Some(mode) = self.mode().route_mode() else {
-            self.query = None;
-            self.route = RouteState::Unavailable;
-            return None;
-        };
+        let mode = self.mode().route_mode();
         let (Some(from), Some(to)) = (self.from.lat_lon(), self.to.lat_lon()) else {
             self.query = None;
             self.route = RouteState::Idle;
@@ -398,24 +392,24 @@ impl Directions {
         true
     }
 
-    /// The routes to draw on the map, in the order listed: the walking route
-    /// first, then transit options. The chosen one is highlighted; before any
-    /// choice, the first transit option, or the walking route in Walk mode.
+    /// The routes to draw on the map, in the order listed: the route all the way
+    /// by street first, then transit options. The chosen one is highlighted;
+    /// before any choice, the first transit option, or else the street route.
     pub fn route_overlay(&self) -> Option<RouteOverlay> {
         let RouteState::Found(plan) = &self.route else {
             return None;
         };
         let mode = self.query?.mode;
 
-        let mut itineraries: Vec<_> = plan.walk.iter().cloned().collect();
+        let mut itineraries: Vec<_> = plan.direct.iter().cloned().collect();
         if mode == RouteMode::Transit {
             itineraries.extend(plan.transit.iter().cloned());
         }
-        let walks = usize::from(plan.walk.is_some());
+        let directs = usize::from(plan.direct.is_some());
         let chosen = match self.chosen {
-            Some(RouteChoice::Walk) => 0,
-            Some(RouteChoice::Transit(index)) => walks + index,
-            None if mode == RouteMode::Transit && !plan.transit.is_empty() => walks,
+            Some(RouteChoice::Direct) => 0,
+            Some(RouteChoice::Transit(index)) => directs + index,
+            None if mode == RouteMode::Transit && !plan.transit.is_empty() => directs,
             None => 0,
         };
 
@@ -528,7 +522,6 @@ impl Directions {
         let status = |text: String| widget::text::caption(text).into();
         let plan = match &self.route {
             RouteState::Idle => return widget::column::with_capacity(0).into(),
-            RouteState::Unavailable => return status(fl!("route-unavailable")),
             RouteState::Loading => return status(fl!("route-loading")),
             RouteState::NotFound => return status(fl!("route-not-found")),
             RouteState::Failed => return status(fl!("route-failed")),
@@ -666,8 +659,9 @@ mod tests {
         assert!(second.id > first.id);
 
         select(&mut directions, TravelMode::Bike);
-        assert!(directions.route_request().is_none());
-        assert!(matches!(directions.route, RouteState::Unavailable));
+        assert_eq!(directions.route_request().unwrap().mode, RouteMode::Bike);
+        select(&mut directions, TravelMode::Car);
+        assert_eq!(directions.route_request().unwrap().mode, RouteMode::Car);
     }
 
     #[test]
@@ -701,7 +695,7 @@ mod tests {
         select(&mut directions, TravelMode::Transit);
         let request = directions.route_request().unwrap();
         let plan = Plan {
-            walk: Some(itinerary()),
+            direct: Some(itinerary()),
             transit: vec![itinerary(), itinerary()],
             ..Plan::default()
         };
@@ -715,7 +709,7 @@ mod tests {
 
         directions.choose(RouteChoice::Transit(1));
         assert_eq!(directions.route_overlay().unwrap().chosen, 2);
-        directions.choose(RouteChoice::Walk);
+        directions.choose(RouteChoice::Direct);
         assert_eq!(directions.route_overlay().unwrap().chosen, 0);
 
         // Nothing to draw while searching again.
@@ -750,7 +744,7 @@ mod tests {
         let actions = directions.update(Message::Swap);
         let [_, Action::FindRoute(second)] = &actions[..] else { panic!() };
 
-        let plan = Plan { walk: Some(itinerary()), ..Plan::default() };
+        let plan = Plan { direct: Some(itinerary()), ..Plan::default() };
         assert!(directions.update(Message::RouteFound(first, Ok(plan.clone()))).is_empty());
         let actions = directions.update(Message::RouteFound(second.id, Ok(plan)));
         assert!(matches!(&actions[..], [Action::ShowRoutes { fit: true }]));
