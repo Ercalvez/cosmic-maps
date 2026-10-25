@@ -34,6 +34,8 @@ const POI_MARKER_RADIUS: f32 = 3.5;
 const POI_MARKER: Color = Color::from_rgb(0.33, 0.33, 0.38);
 /// Farthest a click may land from a POI marker, in pixels, to select it.
 const POI_HIT_RADIUS: f32 = 10.0;
+/// The same for POIs without a marker, which have to be aimed at more precisely.
+const HIDDEN_POI_HIT_RADIUS: f32 = 6.0;
 const MARKER_RADIUS: f32 = 6.0;
 /// Zoom used to show a place picked from search, high enough for POI markers.
 const PLACE_ZOOM: f64 = 16.0;
@@ -182,22 +184,35 @@ impl MapView {
         self.pois.insert(rendered.tile, rendered.pois);
     }
 
-    /// The drawn POI closest to `point`, if one is within `POI_HIT_RADIUS`.
+    /// The POI under `point`: the closest marker within `POI_HIT_RADIUS`, or else the
+    /// closest POI without one within `HIDDEN_POI_HIT_RADIUS`.
+    ///
+    /// Markers win, so important POIs stay easy to pick where POIs are dense. POIs
+    /// thinned out of the markers can still be picked from `POI_MIN_ZOOM`, since the
+    /// tiles in use then hold all of them.
     fn poi_at(&self, point: Point) -> Option<Poi> {
-        self.drawn_pois(self.viewport)
-            .into_iter()
-            .map(|(poi, position)| (poi, position.distance(point)))
-            .filter(|(_, distance)| *distance <= POI_HIT_RADIUS)
-            .min_by(|(_, a), (_, b)| a.total_cmp(b))
-            .map(|(poi, _)| poi.clone())
+        if self.camera.zoom() < POI_MIN_ZOOM {
+            return None;
+        }
+
+        closest_poi(self.drawn_pois(self.viewport), point, POI_HIT_RADIUS)
+            .or_else(|| {
+                closest_poi(self.pois_in_view(self.viewport, u32::MAX), point, HIDDEN_POI_HIT_RADIUS)
+            })
+            .cloned()
     }
 
-    /// POIs to draw as markers, with their position in the viewport. Only the
-    /// clickable ones: none below `POI_MIN_ZOOM`, then the most important first.
+    /// POIs to draw as markers, with their position in the viewport: none below
+    /// `POI_MIN_ZOOM`, then the most important first.
     fn drawn_pois(&self, viewport: Size) -> Vec<(&Poi, Point)> {
-        let Some(max_rank) = max_poi_rank(self.camera.zoom()) else {
-            return Vec::new();
-        };
+        match max_poi_rank(self.camera.zoom()) {
+            Some(max_rank) => self.pois_in_view(viewport, max_rank),
+            None => Vec::new(),
+        }
+    }
+
+    /// Loaded POIs of at most `max_rank`, with their position in the viewport.
+    fn pois_in_view(&self, viewport: Size, max_rank: u32) -> Vec<(&Poi, Point)> {
         let bounds = Rectangle::with_size(viewport);
 
         self.camera
@@ -286,9 +301,15 @@ impl MapView {
         })
         .width(Length::Fill)
         .height(Length::Fill);
+        // A separate canvas, so markers get their own layer: within a layer, iced
+        // draws images such as tiles above shapes such as markers.
+        let markers = widget::canvas(MarkerCanvas { map: self })
+            .width(Length::Fill)
+            .height(Length::Fill);
 
         // Clicks outside the map, such as on the nav bar, also close the popover.
-        let mut map = popover(cosmic::iced::widget::stack![map, controls]).on_close(close);
+        let mut map =
+            popover(cosmic::iced::widget::stack![map, markers, controls]).on_close(close);
         if let Some((popup, position)) = poi_popup {
             let corner = position + Vector::new(POPOVER_OFFSET, POPOVER_OFFSET);
             map = map.popup(popup).position(popover::Position::Point(corner));
@@ -296,6 +317,15 @@ impl MapView {
 
         map.into()
     }
+}
+
+/// The POI closest to `point` within `radius` pixels.
+fn closest_poi<'a>(pois: Vec<(&'a Poi, Point)>, point: Point, radius: f32) -> Option<&'a Poi> {
+    pois.into_iter()
+        .map(|(poi, position)| (poi, position.distance(point)))
+        .filter(|(_, distance)| *distance <= radius)
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(poi, _)| poi)
 }
 
 /// Highest POI rank drawn at `zoom`, following GNOME Maps' density limits, or
@@ -511,7 +541,7 @@ where
         &self,
         _state: &CanvasState,
         renderer: &cosmic::Renderer,
-        theme: &cosmic::Theme,
+        _theme: &cosmic::Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry<cosmic::Renderer>> {
@@ -555,6 +585,44 @@ where
             }
         }
 
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &CanvasState,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if state.drag_from.is_some() {
+            mouse::Interaction::Grabbing
+        } else if cursor.is_over(bounds) {
+            mouse::Interaction::Grab
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+}
+
+/// POI markers and the selected POI, drawn above the tiles. It does not handle
+/// events, so they reach `MapCanvas` below.
+struct MarkerCanvas<'a> {
+    map: &'a MapView,
+}
+
+impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for MarkerCanvas<'_> {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &cosmic::Renderer,
+        theme: &cosmic::Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry<cosmic::Renderer>> {
+        let mut frame = Frame::new(renderer, bounds.size());
+
         // One path for all markers: there can be hundreds.
         let pois = self.map.drawn_pois(bounds.size());
         if !pois.is_empty() {
@@ -580,20 +648,5 @@ where
         }
 
         vec![frame.into_geometry()]
-    }
-
-    fn mouse_interaction(
-        &self,
-        state: &CanvasState,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        if state.drag_from.is_some() {
-            mouse::Interaction::Grabbing
-        } else if cursor.is_over(bounds) {
-            mouse::Interaction::Grab
-        } else {
-            mouse::Interaction::default()
-        }
     }
 }
