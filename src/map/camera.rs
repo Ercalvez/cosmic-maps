@@ -55,6 +55,10 @@ impl Camera {
         }
     }
 
+    pub fn zoom(&self) -> f64 {
+        self.zoom
+    }
+
     /// Moves the map content by `(dx, dy)` screen pixels.
     pub fn pan(&mut self, dx: f64, dy: f64) {
         let world = world_size(self.zoom);

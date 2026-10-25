@@ -4,15 +4,17 @@ use cosmic::iced::widget::canvas::{self, Action, Event, Frame, Geometry};
 use cosmic::iced::widget::image::Handle;
 use cosmic::iced::{Color, Length, Point, Rectangle, Size, Vector, mouse};
 use cosmic::prelude::*;
-use cosmic::widget;
+use cosmic::widget::{self, icon};
 
-use super::camera::{Camera, TileId};
+use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId};
 use super::state::MapState;
 
 /// Initial view: Berlin.
 const INITIAL_CENTER: (f64, f64) = (52.52, 13.405);
 const INITIAL_ZOOM: f64 = 12.0;
 
+/// Zoom levels per click on the zoom buttons.
+const ZOOM_PER_CLICK: f64 = 1.0;
 /// Zoom levels per mouse wheel notch, and per pixel of touchpad scrolling.
 const ZOOM_PER_LINE: f64 = 0.5;
 const ZOOM_PER_PIXEL: f64 = 0.01;
@@ -107,15 +109,37 @@ impl MapView {
         on_event: impl Fn(MapEvent) -> Message + 'a,
     ) -> Element<'a, Message>
     where
-        Message: 'static,
+        Message: Clone + 'static,
     {
-        widget::canvas(MapCanvas {
+        let spacing = cosmic::theme::spacing();
+        let zoom = |delta| on_event(MapEvent::Zoom { delta, anchor: None });
+
+        let zoom_in = widget::button::icon(icon::from_name("zoom-in-symbolic"))
+            .on_press_maybe((self.camera.zoom() < MAX_ZOOM).then(|| zoom(ZOOM_PER_CLICK)));
+        let zoom_out = widget::button::icon(icon::from_name("zoom-out-symbolic"))
+            .on_press_maybe((self.camera.zoom() > MIN_ZOOM).then(|| zoom(-ZOOM_PER_CLICK)));
+
+        let controls = widget::container(
+            widget::column::with_capacity(2)
+                .push(zoom_in)
+                .push(zoom_out)
+                .spacing(spacing.space_xxxs),
+        )
+        .padding(spacing.space_xxxs)
+        .class(cosmic::theme::Container::Card)
+        .apply(widget::container)
+        .padding(spacing.space_s)
+        .align_right(Length::Fill)
+        .align_top(Length::Fill);
+
+        let map = widget::canvas(MapCanvas {
             map: self,
             on_event,
         })
         .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .height(Length::Fill);
+
+        cosmic::iced::widget::stack![map, controls].into()
     }
 }
 
