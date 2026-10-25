@@ -135,9 +135,8 @@ pub struct MapView {
     wanted: Vec<TileId>,
     /// Where the user is, once known.
     user: Option<Position>,
-    /// The view was chosen, by the user or by centering on their position, so a
-    /// new position must not move it.
-    view_chosen: bool,
+    /// The map re-centres on each new position until the user moves it.
+    following_user: bool,
 }
 
 impl MapView {
@@ -160,7 +159,7 @@ impl MapView {
             details: HashMap::new(),
             wanted: Vec::new(),
             user: None,
-            view_chosen: false,
+            following_user: true,
         };
 
         (map, tiles)
@@ -171,11 +170,11 @@ impl MapView {
 
         match event {
             MapEvent::Pan { dx, dy } => {
-                self.view_chosen = true;
+                self.following_user = false;
                 self.camera.pan(dx, dy);
             }
             MapEvent::Zoom { delta, anchor } => {
-                self.view_chosen = true;
+                self.following_user = false;
                 let anchor = anchor.unwrap_or(Point::new(self.viewport.width / 2.0, self.viewport.height / 2.0));
                 self.camera.zoom_at(delta, anchor, self.viewport);
             }
@@ -191,7 +190,10 @@ impl MapView {
                 }
             }
             MapEvent::ClosePanel => self.close_panel(),
-            MapEvent::Locate => self.center_on_user(),
+            MapEvent::Locate => {
+                self.following_user = true;
+                self.center_on_user();
+            }
             MapEvent::OpenUrl(url) => action = Some(MapAction::OpenUrl(url)),
         }
 
@@ -202,7 +204,7 @@ impl MapView {
     /// Centers the map on `poi` and shows it in the place panel, such as for a search
     /// result.
     pub fn show_place(&mut self, poi: Poi) -> Option<MapAction> {
-        self.view_chosen = true;
+        self.following_user = false;
         self.camera = Camera::centered_on(poi.position, PLACE_ZOOM);
         self.lookup = None;
         self.selected = Some(poi);
@@ -445,11 +447,11 @@ impl MapView {
         cosmic::iced::widget::stack![map, markers, controls].into()
     }
 
-    /// Records where the user is. The first time, the map centers there, unless
-    /// the user already moved it while waiting.
+    /// Records where the user is. Until the user moves the map, it re-centres there,
+    /// so a better estimate replaces a rough first one.
     pub fn set_position(&mut self, position: Position) {
         self.user = Some(position);
-        if !self.view_chosen {
+        if self.following_user {
             self.center_on_user();
         }
     }
@@ -465,7 +467,6 @@ impl MapView {
         };
         let zoom = zoom_showing(user.accuracy, user.latitude, span).min(LOCATED_MAX_ZOOM);
 
-        self.view_chosen = true;
         self.camera = Camera::centered_on(world_position(user.latitude, user.longitude), zoom);
         self.request_tiles();
     }
