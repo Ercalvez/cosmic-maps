@@ -11,6 +11,15 @@ mod config;
 mod i18n;
 
 fn main() -> cosmic::iced::Result {
+    // Warnings by default, without those maplibre gives for every tile;
+    // `RUST_LOG=cosmic_maps=debug` shows more.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,maplibre=error")),
+        )
+        .init();
+
     // Get the system's preferred languages.
     let requested_languages = i18n_embed::DesktopLanguageRequester::requested_languages();
 

@@ -91,7 +91,7 @@ impl SearchBox {
                         self.take(index).map(Action::Pick)
                     }
                     Err(err) => {
-                        eprintln!("search for {query:?} failed: {err:?}");
+                        tracing::warn!("search for {query:?} failed: {err:?}");
                         None
                     }
                 }

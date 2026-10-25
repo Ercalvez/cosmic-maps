@@ -391,7 +391,7 @@ impl Directions {
             Ok(plan) if plan.is_empty(query.mode) => RouteState::NotFound,
             Ok(plan) => RouteState::Found(plan),
             Err(err) => {
-                eprintln!("failed to find routes: {err:?}");
+                tracing::warn!("failed to find routes: {err:?}");
                 RouteState::Failed
             }
         };

@@ -57,7 +57,7 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>, mut pa
     let mut style = palette.style();
     // Palettes only change colours, so the map keeps this style's layers.
     let mut map = create_map(style.clone(), frame_tx).await;
-    println!("MapLibre initialized");
+    tracing::debug!("MapLibre initialized");
 
     let mut queue: Vec<TileId> = Vec::new();
 
@@ -135,7 +135,7 @@ async fn render_tile(
     let data = match map.fetch_tile(coords).await {
         Ok(data) => data,
         Err(err) => {
-            eprintln!("failed to fetch tile {coords}: {err:?}");
+            tracing::warn!("failed to fetch tile {coords}: {err:?}");
             return None;
         }
     };

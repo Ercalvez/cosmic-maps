@@ -136,11 +136,10 @@ impl cosmic::Application for AppModel {
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
-                    Err((_errors, config)) => {
-                        // for why in errors {
-                        //     tracing::error!(%why, "error loading app config");
-                        // }
-
+                    Err((errors, config)) => {
+                        for why in errors {
+                            tracing::error!(%why, "error loading app config");
+                        }
                         config
                     }
                 })
@@ -290,10 +289,9 @@ impl cosmic::Application for AppModel {
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
                 .map(|update| {
-                    // for why in update.errors {
-                    //     tracing::error!(?why, "app config error");
-                    // }
-
+                    for why in update.errors {
+                        tracing::error!(?why, "app config error");
+                    }
                     Message::UpdateConfig(update.config)
                 }),
         ];
@@ -443,7 +441,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Location(Err(err)) => {
-                eprintln!("location unavailable: {err}");
+                tracing::warn!("location unavailable: {err}");
             }
 
             Message::Reverse(request, result) => {
@@ -473,7 +471,7 @@ impl cosmic::Application for AppModel {
             Message::LaunchUrl(url) => match open::that_detached(&url) {
                 Ok(()) => {}
                 Err(err) => {
-                    eprintln!("failed to open {url:?}: {err}");
+                    tracing::error!("failed to open {url:?}: {err}");
                 }
             },
         }

@@ -230,7 +230,7 @@ impl MapView {
             }
             Err(services::Error::Network(err)) => {
                 // Forget the request, so selecting the POI again retries it.
-                eprintln!("failed to fetch details of {osm_id:?}: {err}");
+                tracing::warn!("failed to fetch details of {osm_id:?}: {err}");
                 self.details.remove(&osm_id);
             }
         }
@@ -282,7 +282,7 @@ impl MapView {
                 self.selected = Some(poi);
             }
             Ok(None) => {}
-            Err(err) => eprintln!("failed to look up what is at the click: {err:?}"),
+            Err(err) => tracing::warn!("failed to look up what is at the click: {err:?}"),
         }
     }
 
