@@ -27,7 +27,7 @@ use maplibre::{
 
 use super::camera::TileId;
 use super::poi::{Poi, parse_pois, system_languages};
-use super::style::MapTheme;
+use super::style::MapPalette;
 use super::state::{MapCommand, RenderedTile};
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
@@ -39,7 +39,7 @@ struct MapImage {
     pixels: Vec<u8>,
 }
 
-pub fn spawn(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
+pub fn spawn(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>, palette: MapPalette) {
     // `HeadlessMap` is not `Send`, so it lives on its own thread with its own runtime.
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -47,31 +47,30 @@ pub fn spawn(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
             .build()
             .expect("failed to create map runtime");
 
-        runtime.block_on(run(rx, tx));
+        runtime.block_on(run(rx, tx, palette));
     });
 }
 
-async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
+async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>, mut palette: MapPalette) {
     let languages = system_languages();
     let (frame_tx, frame_rx) = std::sync::mpsc::channel();
-    // Themes only change colours, so the map keeps the light style's layers.
-    let mut map = create_map(MapTheme::Light.style(), frame_tx).await;
+    let mut style = palette.style();
+    // Palettes only change colours, so the map keeps this style's layers.
+    let mut map = create_map(style.clone(), frame_tx).await;
     println!("MapLibre initialized");
 
     let mut queue: Vec<TileId> = Vec::new();
-    let mut theme = MapTheme::Light;
-    let mut style = theme.style();
 
     loop {
         // Block while idle. Blocking is fine: this thread only serves the map.
         if queue.is_empty() {
             let Ok(command) = rx.recv() else { break };
-            apply(command, &mut queue, &mut theme, &mut style);
+            apply(command, &mut queue, &mut palette, &mut style);
         }
 
         // Pick up newer requests so tiles that scrolled away are dropped.
         while let Ok(command) = rx.try_recv() {
-            apply(command, &mut queue, &mut theme, &mut style);
+            apply(command, &mut queue, &mut palette, &mut style);
         }
 
         if queue.is_empty() {
@@ -90,7 +89,7 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
             tile,
             image,
             pois: pois.into(),
-            theme,
+            palette,
         };
         if tx.unbounded_send(rendered).is_err() {
             break;
@@ -98,12 +97,12 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>) {
     }
 }
 
-fn apply(command: MapCommand, queue: &mut Vec<TileId>, theme: &mut MapTheme, style: &mut Style) {
+fn apply(command: MapCommand, queue: &mut Vec<TileId>, palette: &mut MapPalette, style: &mut Style) {
     match command {
         MapCommand::Want(tiles) => *queue = tiles,
-        MapCommand::SetTheme(new_theme) => {
-            *theme = new_theme;
-            *style = new_theme.style();
+        MapCommand::SetPalette(new_palette) => {
+            *palette = new_palette;
+            *style = new_palette.style();
         }
     }
 }

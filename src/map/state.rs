@@ -6,7 +6,7 @@ use cosmic::iced::widget::image::Handle;
 
 use super::camera::TileId;
 use super::poi::Poi;
-use super::style::MapTheme;
+use super::style::MapPalette;
 
 pub struct MapState {
     renderer_tx: Sender<MapCommand>,
@@ -19,25 +19,26 @@ pub struct RenderedTile {
     pub image: Option<Handle>,
     /// Named POIs in the tile. Shared, so cloning the message stays cheap.
     pub pois: Arc<[Poi]>,
-    /// The style the image was rendered with.
-    pub theme: MapTheme,
+    /// The palette the image was rendered with.
+    pub palette: MapPalette,
 }
 
 pub enum MapCommand {
     /// Tiles to render, in priority order. Replaces any earlier request.
     Want(Vec<TileId>),
-    /// Render with this style from now on.
-    SetTheme(MapTheme),
+    /// Render with these colours from now on.
+    SetPalette(MapPalette),
 }
 
 impl MapState {
-    /// Starts the worker. The receiver yields tiles as soon as they are rendered.
-    pub fn new() -> (Self, UnboundedReceiver<RenderedTile>) {
+    /// Starts the worker, rendering with `palette`. The receiver yields tiles as
+    /// soon as they are rendered.
+    pub fn new(palette: MapPalette) -> (Self, UnboundedReceiver<RenderedTile>) {
         let (renderer_tx, renderer_rx) = std::sync::mpsc::channel();
         // An async channel, so the UI can await tiles instead of polling for them.
         let (tile_tx, tile_rx) = mpsc::unbounded();
 
-        crate::map::worker::spawn(renderer_rx, tile_tx);
+        crate::map::worker::spawn(renderer_rx, tile_tx, palette);
 
         (Self { renderer_tx }, tile_rx)
     }
@@ -46,7 +47,7 @@ impl MapState {
         let _ = self.renderer_tx.send(MapCommand::Want(tiles));
     }
 
-    pub fn set_theme(&self, theme: MapTheme) {
-        let _ = self.renderer_tx.send(MapCommand::SetTheme(theme));
+    pub fn set_palette(&self, palette: MapPalette) {
+        let _ = self.renderer_tx.send(MapCommand::SetPalette(palette));
     }
 }

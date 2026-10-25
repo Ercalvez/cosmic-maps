@@ -15,7 +15,7 @@ use super::location::Position;
 use super::details::{self, PoiDetails, Shape, Wheelchair};
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
-use super::style::MapTheme;
+use super::style::MapPalette;
 
 /// Initial view: Berlin.
 const INITIAL_CENTER: (f64, f64) = (52.52, 13.405);
@@ -106,13 +106,13 @@ enum DetailsState {
 /// A rendered tile, or `None` if it failed to load.
 struct CachedTile {
     image: Option<Handle>,
-    theme: MapTheme,
+    palette: MapPalette,
 }
 
 impl CachedTile {
-    /// Rendered in another theme. Failed tiles are not retried for a theme change.
-    fn is_stale(&self, theme: MapTheme) -> bool {
-        self.image.is_some() && self.theme != theme
+    /// Rendered with other colours. Failed tiles are not retried for a new palette.
+    fn is_stale(&self, palette: &MapPalette) -> bool {
+        self.image.is_some() && self.palette != *palette
     }
 }
 
@@ -120,10 +120,10 @@ pub struct MapView {
     state: MapState,
     camera: Camera,
     viewport: Size,
-    /// Rendered tiles, possibly in a previous theme until re-rendered.
+    /// Rendered tiles, possibly in previous colours until re-rendered.
     tiles: HashMap<TileId, CachedTile>,
-    /// Style tiles are rendered with; tiles in another one are re-rendered.
-    theme: MapTheme,
+    /// Colours tiles are rendered with; tiles in other colours are re-rendered.
+    palette: MapPalette,
     pois: HashMap<TileId, Arc<[Poi]>>,
     /// POI shown in the place panel.
     selected: Option<Poi>,
@@ -143,16 +143,16 @@ pub struct MapView {
 impl MapView {
     /// Creates the map. The stream yields each tile when it is rendered; feed them
     /// back through [`MapView::insert_tile`].
-    pub fn new() -> (Self, impl Stream<Item = RenderedTile> + Send + 'static) {
+    pub fn new(palette: MapPalette) -> (Self, impl Stream<Item = RenderedTile> + Send + 'static) {
         let (lat, lon) = INITIAL_CENTER;
-        let (state, tiles) = MapState::new();
+        let (state, tiles) = MapState::new(palette);
 
         let map = Self {
             state,
             camera: Camera::from_lat_lon(lat, lon, INITIAL_ZOOM),
             viewport: Size::ZERO,
             tiles: HashMap::new(),
-            theme: MapTheme::Light,
+            palette,
             pois: HashMap::new(),
             selected: None,
             lookup: None,
@@ -293,20 +293,20 @@ impl MapView {
     }
 
     /// Switches the map's colours. Tiles on screen stay until re-rendered.
-    pub fn set_theme(&mut self, theme: MapTheme) {
-        if theme == self.theme {
+    pub fn set_palette(&mut self, palette: MapPalette) {
+        if palette == self.palette {
             return;
         }
-        self.theme = theme;
-        // Before the request below, which the worker then renders in this theme.
-        self.state.set_theme(theme);
+        self.palette = palette;
+        // Before the request below, which the worker then renders with it.
+        self.state.set_palette(palette);
         self.request_tiles();
     }
 
     pub fn insert_tile(&mut self, rendered: RenderedTile) {
         let cached = CachedTile {
             image: rendered.image,
-            theme: rendered.theme,
+            palette: rendered.palette,
         };
         self.tiles.insert(rendered.tile, cached);
         self.pois.insert(rendered.tile, rendered.pois);
@@ -374,7 +374,7 @@ impl MapView {
             .visible_tiles(self.viewport)
             .into_iter()
             .map(|tile| tile.id)
-            .filter(|id| self.tiles.get(id).is_none_or(|cached| cached.is_stale(self.theme)))
+            .filter(|id| self.tiles.get(id).is_none_or(|cached| cached.is_stale(&self.palette)))
             .collect();
 
         if missing != self.wanted {
@@ -724,7 +724,7 @@ where
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry<cosmic::Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.map.theme.background());
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.map.palette.land);
 
         for tile in self.map.camera.visible_tiles(bounds.size()) {
             let rect = Rectangle::new(tile.position, Size::new(tile.size, tile.size));
@@ -758,7 +758,7 @@ where
                 frame.fill_rectangle(
                     rect.position() + Vector::new(1.0, 1.0),
                     Size::new(tile.size - 2.0, tile.size - 2.0),
-                    self.map.theme.placeholder(),
+                    self.map.palette.placeholder,
                 );
             }
         }
@@ -839,11 +839,11 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
                     builder.circle(*position, POI_MARKER_RADIUS);
                 }
             });
-            let (fill, outline) = self.map.theme.poi_marker();
-            frame.fill(&markers, fill);
+            let MapPalette { poi_marker, poi_outline, .. } = self.map.palette;
+            frame.fill(&markers, poi_marker);
             frame.stroke(
                 &markers,
-                canvas::Stroke::default().with_color(outline).with_width(1.5),
+                canvas::Stroke::default().with_color(poi_outline).with_width(1.5),
             );
         }
 
