@@ -9,24 +9,46 @@ use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget;
 
-use crate::services::photon::SearchResult;
+use crate::services::{self, photon::SearchResult};
 
 /// Pause after typing before searching, and the shortest query searched, as in
 /// GNOME Maps.
 pub const SEARCH_DELAY: Duration = Duration::from_millis(500);
 const SEARCH_MIN_CHARS: usize = 3;
 
-/// Which search field a message is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchTarget {
-    Header,
-    From,
-    To,
+/// Messages of a search field.
+#[derive(Debug, Clone)]
+pub enum Message {
+    Input(String),
+    /// Sent `SEARCH_DELAY` after typing; searches if the text is still the same.
+    Debounced(String),
+    /// Enter was pressed.
+    Submit,
+    /// Places found for this text.
+    Results(String, Result<Vec<SearchResult>, services::Error>),
+    /// A result was clicked.
+    Select(usize),
+}
+
+/// A place search to run, sending its answer back as [`Message::Results`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Query {
+    /// After `SEARCH_DELAY`, as [`Message::Debounced`].
+    Later(String),
+    Now(String),
+}
+
+/// What a message to a search field leads to, from [`SearchBox::update`].
+#[derive(Debug)]
+pub enum Action {
+    Query(Query),
+    /// The user picked this place.
+    Pick(SearchResult),
 }
 
 /// What pressing Enter in a search field leads to.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Submit {
+enum Submit {
     /// Pick the result at this index.
     Pick(usize),
     /// Search this text now, and pick the first result when it arrives.
@@ -46,9 +68,41 @@ pub struct SearchBox {
 }
 
 impl SearchBox {
+    pub fn update(&mut self, message: Message) -> Option<Action> {
+        match message {
+            Message::Input(text) => self.on_input(text).map(|query| Action::Query(Query::Later(query))),
+            // Typing continued: a later message will search.
+            Message::Debounced(query) => {
+                self.is_current(&query).then_some(Action::Query(Query::Now(query)))
+            }
+            Message::Submit => match self.submit() {
+                Submit::Pick(index) => self.take(index).map(Action::Pick),
+                Submit::Search(query) => Some(Action::Query(Query::Now(query))),
+                Submit::Nothing => None,
+            },
+            Message::Results(query, result) => {
+                // Results for text that has changed since are stale.
+                if !self.is_current(&query) {
+                    return None;
+                }
+                match result {
+                    Ok(results) => {
+                        let index = self.set_results(results)?;
+                        self.take(index).map(Action::Pick)
+                    }
+                    Err(err) => {
+                        eprintln!("search for {query:?} failed: {err:?}");
+                        None
+                    }
+                }
+            }
+            Message::Select(index) => self.take(index).map(Action::Pick),
+        }
+    }
+
     /// Records typed text. Returns the query to search after `SEARCH_DELAY`, if it
     /// is long enough.
-    pub fn on_input(&mut self, input: String) -> Option<String> {
+    fn on_input(&mut self, input: String) -> Option<String> {
         self.input = input.clone();
         self.highlight = None;
         if input.trim().chars().count() < SEARCH_MIN_CHARS {
@@ -60,11 +114,11 @@ impl SearchBox {
     }
 
     /// Whether `query` is still the field's text: results for older text are stale.
-    pub fn is_current(&self, query: &str) -> bool {
+    fn is_current(&self, query: &str) -> bool {
         self.input == query
     }
 
-    pub fn submit(&mut self) -> Submit {
+    fn submit(&mut self) -> Submit {
         if let Some(index) = self.highlight.or((!self.results.is_empty()).then_some(0)) {
             return Submit::Pick(index);
         }
@@ -77,14 +131,14 @@ impl SearchBox {
 
     /// Stores results for the current text. Returns the result to pick, if Enter was
     /// pressed before they arrived.
-    pub fn set_results(&mut self, results: Vec<SearchResult>) -> Option<usize> {
+    fn set_results(&mut self, results: Vec<SearchResult>) -> Option<usize> {
         self.results = results;
         self.highlight = None;
         (std::mem::take(&mut self.submitted) && !self.results.is_empty()).then_some(0)
     }
 
     /// Takes a result, hiding the list and keeping the text so it can be refined.
-    pub fn take(&mut self, index: usize) -> Option<SearchResult> {
+    fn take(&mut self, index: usize) -> Option<SearchResult> {
         let result = self.results.get(index).cloned()?;
         self.hide_results();
         Some(result)
@@ -221,5 +275,33 @@ mod tests {
         // Later results are not picked automatically.
         assert_eq!(search.set_results(vec![result("Berlin")]), None);
         assert_eq!(search.submit(), Submit::Pick(0));
+    }
+
+    #[test]
+    fn typing_searches_after_the_pause_only_if_unchanged() {
+        let mut search = SearchBox::default();
+        let update = |search: &mut SearchBox, message| match search.update(message) {
+            Some(Action::Query(query)) => Some(query),
+            _ => None,
+        };
+        let later = update(&mut search, Message::Input("Châtelet".to_owned()));
+        assert_eq!(later, Some(Query::Later("Châtelet".to_owned())));
+        search.update(Message::Input("Châtelet-Les Halles".to_owned()));
+
+        assert_eq!(update(&mut search, Message::Debounced("Châtelet".to_owned())), None);
+        let now = update(&mut search, Message::Debounced("Châtelet-Les Halles".to_owned()));
+        assert_eq!(now, Some(Query::Now("Châtelet-Les Halles".to_owned())));
+    }
+
+    #[test]
+    fn enter_then_results_picks_the_first() {
+        let mut search = SearchBox::default();
+        search.update(Message::Input("Châtelet".to_owned()));
+        search.update(Message::Submit);
+        let picked = search.update(Message::Results("Châtelet".to_owned(), Ok(vec![result("Châtelet")])));
+        assert!(matches!(picked, Some(Action::Pick(result)) if result.poi.name == "Châtelet"));
+        // The text stays, without the results.
+        assert_eq!(search.input, "Châtelet");
+        assert!(search.results.is_empty());
     }
 }

@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::config::Config;
-use crate::directions::{Directions, RouteRequest};
+use crate::directions::{self, Directions, RouteRequest};
 use crate::fl;
 use crate::map::location::{self, Position};
 use crate::map::style::MapPalette;
 use crate::map::poi::{OsmId, Poi};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
-use crate::route_view::{self, RouteChoice};
+use crate::route_view;
 use crate::services::nominatim::{self, PoiDetails};
-use crate::services::photon::{self, SearchResult};
-use crate::services::transitous::{self, Plan};
+use crate::services::photon;
+use crate::services::transitous;
 use crate::services;
-use crate::search_box::{SEARCH_DELAY, SearchBox, SearchTarget, Submit};
+use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::futures::StreamExt;
 use cosmic::iced::{Length, Subscription, event, keyboard};
 use cosmic::prelude::*;
-use cosmic::widget::{self, about::About, icon, menu, popover, segmented_button};
+use cosmic::widget::{self, about::About, icon, menu, popover};
 use std::collections::HashMap;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -68,25 +68,12 @@ pub enum Message {
     Reverse(u64, Result<Option<(Poi, PoiDetails)>, services::Error>),
     SearchActivate,
     SearchClear,
-    SearchInput(SearchTarget, String),
-    /// Sent `SEARCH_DELAY` after typing; searches if the text is still the same.
-    SearchDebounced(SearchTarget, String),
-    SearchSubmit(SearchTarget),
-    SearchResults(SearchTarget, String, Result<Vec<SearchResult>, services::Error>),
-    SearchSelect(SearchTarget, usize),
+    /// The header search field.
+    Search(search_box::Message),
     /// The place panel's Directions button.
     OpenDirections,
-    DirectionsMode(segmented_button::Entity),
-    DirectionsSwap,
     DirectionsBack,
-    /// Routes found for the directions form, for the search with this number.
-    RouteFound(u64, Result<Plan, services::Error>),
-    /// Transit options leaving later (`true`) or earlier than those shown.
-    RoutePage(bool),
-    /// Show or hide the details of a route option.
-    RouteChoose(RouteChoice),
-    /// Show or hide the stops of a leg of the chosen route option.
-    RouteToggleStops(usize),
+    Directions(directions::Message),
     Arrow(Arrow),
 }
 
@@ -197,8 +184,8 @@ impl cosmic::Application for AppModel {
                     .width(Length::Fixed(SEARCH_INPUT_WIDTH))
                     .id(self.search_id.clone())
                     .on_clear(Message::SearchClear)
-                    .on_input(|text| Message::SearchInput(SearchTarget::Header, text))
-                    .on_submit(|_| Message::SearchSubmit(SearchTarget::Header));
+                    .on_input(|text| Message::Search(search_box::Message::Input(text)))
+                    .on_submit(|_| Message::Search(search_box::Message::Submit));
 
             // Results drop down under the field, kept inside the window. No
             // `on_close`: it also fires for presses on the results themselves.
@@ -270,13 +257,13 @@ impl cosmic::Application for AppModel {
                 // The form stays in the header, above the scrolling results.
                 let directions = self.directions.as_ref()?;
                 context_drawer::context_drawer(
-                    directions.results_view(),
+                    directions.results_view().map(Message::Directions),
                     Message::Map(MapEvent::ClosePanel),
                 )
                 .title(fl!("directions"))
                 .actions(back)
-                .header(directions.form_view())
-                .footer(route_view::attribution())
+                .header(directions.form_view().map(Message::Directions))
+                .footer(route_view::attribution(Message::LaunchUrl))
             }
         })
     }
@@ -381,133 +368,33 @@ impl cosmic::Application for AppModel {
                 self.search.clear();
             }
 
-            Message::SearchInput(target, text) => {
-                let query = match target {
-                    SearchTarget::Header => self.search.on_input(text),
-                    SearchTarget::From | SearchTarget::To => self
-                        .directions
-                        .as_mut()
-                        .and_then(|directions| directions.on_input(target, text)),
-                };
-                // A typed start or destination is unset until picked: clear the routes.
-                let route = self.request_route();
-                if let Some(query) = query {
-                    let search = cosmic::task::future(async move {
-                        tokio::time::sleep(SEARCH_DELAY).await;
-                        Message::SearchDebounced(target, query)
-                    });
-                    return Task::batch([route, search]);
+            Message::Search(message) => match self.search.update(message) {
+                Some(search_box::Action::Query(query)) => {
+                    return self.search_places(query, Message::Search);
                 }
-                return route;
-            }
-
-            Message::SearchDebounced(target, query) => {
-                // Typing continued: a later message will search.
-                if self
-                    .search_box_mut(target)
-                    .is_some_and(|search| search.is_current(&query))
-                {
-                    return self.search(target, query);
+                Some(search_box::Action::Pick(result)) => {
+                    let action = self.map.show_place(result.poi);
+                    let route = self.sync_place_drawer();
+                    return Task::batch([route, self.run_map_action(action)]);
                 }
-            }
-
-            Message::SearchSubmit(target) => {
-                let Some(search) = self.search_box_mut(target) else {
-                    return Task::none();
-                };
-                match search.submit() {
-                    Submit::Pick(index) => return self.update(Message::SearchSelect(target, index)),
-                    Submit::Search(query) => return self.search(target, query),
-                    Submit::Nothing => {}
-                }
-            }
-
-            Message::SearchResults(target, query, result) => {
-                let Some(search) = self.search_box_mut(target) else {
-                    return Task::none();
-                };
-                // Results for text that has changed since are stale.
-                if !search.is_current(&query) {
-                    return Task::none();
-                }
-                match result {
-                    Ok(results) => {
-                        if let Some(index) = search.set_results(results) {
-                            return self.update(Message::SearchSelect(target, index));
-                        }
-                    }
-                    Err(err) => eprintln!("search for {query:?} failed: {err:?}"),
-                }
-            }
-
-            Message::SearchSelect(target, index) => {
-                let Some(result) = self.search_box_mut(target).and_then(|search| search.take(index))
-                else {
-                    return Task::none();
-                };
-                match target {
-                    SearchTarget::Header => {
-                        let action = self.map.show_place(result.poi);
-                        let route = self.sync_place_drawer();
-                        return Task::batch([route, self.run_map_action(action)]);
-                    }
-                    SearchTarget::From | SearchTarget::To => {
-                        if let Some(directions) = &mut self.directions {
-                            directions.pick(target, result.poi);
-                        }
-                        return self.request_route();
-                    }
-                }
-            }
+                None => {}
+            },
 
             Message::OpenDirections => {
-                self.open_directions();
-                return self.request_route();
-            }
-
-            Message::DirectionsMode(mode) => {
-                if let Some(directions) = &mut self.directions {
-                    directions.select_mode(mode);
-                }
-                return self.request_route();
-            }
-
-            Message::DirectionsSwap => {
-                if let Some(directions) = &mut self.directions {
-                    directions.swap();
-                }
-                return self.request_route();
-            }
-
-            Message::RouteFound(id, result) => {
-                if let Some(directions) = &mut self.directions {
-                    directions.insert_route(id, result);
-                }
-                self.show_routes(true);
-            }
-
-            Message::RouteChoose(choice) => {
-                if let Some(directions) = &mut self.directions {
-                    directions.choose(choice);
-                }
-                // The view already shows every option.
-                self.show_routes(false);
-            }
-
-            Message::RouteToggleStops(leg) => {
-                if let Some(directions) = &mut self.directions {
-                    directions.toggle_stops(leg);
+                if let Some(place) = self.map.selected() {
+                    let mut directions = Directions::new(place, self.map.user_position());
+                    let actions = directions.refresh();
+                    self.directions = Some(directions);
+                    self.context_page = ContextPage::Directions;
+                    self.core.window.show_context = true;
+                    return self.run_directions(actions);
                 }
             }
 
-            Message::RoutePage(later) => {
-                if let Some(request) = self
-                    .directions
-                    .as_mut()
-                    .and_then(|directions| directions.page_request(later))
-                {
-                    self.show_routes(false);
-                    return Self::find_route(request);
+            Message::Directions(message) => {
+                if let Some(directions) = &mut self.directions {
+                    let actions = directions.update(message);
+                    return self.run_directions(actions);
                 }
             }
 
@@ -527,8 +414,7 @@ impl cosmic::Application for AppModel {
                         && self
                             .directions
                             .as_mut()
-                            .and_then(Directions::searching_mut)
-                            .is_some_and(|search| search.move_highlight(down));
+                            .is_some_and(|directions| directions.move_highlight(down));
                     if header || directions {
                         return Task::none();
                     }
@@ -550,10 +436,9 @@ impl cosmic::Application for AppModel {
 
             Message::Location(Ok(position)) => {
                 self.map.set_position(position);
-                if let Some(directions) = &mut self.directions
-                    && directions.user_position_known(position)
-                {
-                    return self.request_route();
+                if let Some(directions) = &mut self.directions {
+                    let actions = directions.set_user_position(position);
+                    return self.run_directions(actions);
                 }
             }
 
@@ -603,10 +488,11 @@ impl AppModel {
     /// selected place becomes its destination instead, and routes are searched.
     fn sync_place_drawer(&mut self) -> Task<cosmic::Action<Message>> {
         if let Some(directions) = &mut self.directions {
-            if let Some(place) = self.map.selected() {
-                directions.set_destination(place.clone());
-            }
-            return self.request_route();
+            let actions = match self.map.selected() {
+                Some(place) => directions.set_destination(place.clone()),
+                None => Vec::new(),
+            };
+            return self.run_directions(actions);
         }
 
         if self.map.has_place() {
@@ -618,16 +504,21 @@ impl AppModel {
         Task::none()
     }
 
-    /// Updates the directions' routes after a change to the form, searching when
-    /// the trip changed.
-    fn request_route(&mut self) -> Task<cosmic::Action<Message>> {
-        let request = self.directions.as_mut().and_then(Directions::route_request);
-        // The routes shown may no longer match the form.
-        self.show_routes(false);
-        match request {
-            Some(request) => Self::find_route(request),
-            None => Task::none(),
+    /// Carries out work the directions asked for.
+    fn run_directions(&mut self, actions: Vec<directions::Action>) -> Task<cosmic::Action<Message>> {
+        let mut tasks = Vec::with_capacity(actions.len());
+        for action in actions {
+            match action {
+                directions::Action::Search(field, query) => {
+                    tasks.push(self.search_places(query, move |message| {
+                        Message::Directions(directions::Message::Field(field, message))
+                    }));
+                }
+                directions::Action::FindRoute(request) => tasks.push(Self::find_route(request)),
+                directions::Action::ShowRoutes { fit } => self.show_routes(fit),
+            }
         }
+        Task::batch(tasks)
     }
 
     /// Draws the directions' routes on the map, or clears them, framing the
@@ -644,18 +535,8 @@ impl AppModel {
     fn find_route(request: RouteRequest) -> Task<cosmic::Action<Message>> {
         cosmic::task::future(async move {
             let result = transitous::plan(request.from, request.to, request.mode, request.page).await;
-            Message::RouteFound(request.id, result)
+            Message::Directions(directions::Message::RouteFound(request.id, result))
         })
-    }
-
-    /// Opens the directions form, from the user's position to the selected place.
-    fn open_directions(&mut self) {
-        let Some(place) = self.map.selected() else {
-            return;
-        };
-        self.directions = Some(Directions::new(place, self.map.user_position()));
-        self.context_page = ContextPage::Directions;
-        self.core.window.show_context = true;
     }
 
     /// Carries out work the map asked for.
@@ -676,21 +557,26 @@ impl AppModel {
         }
     }
 
-    /// The search box behind a search field, if that field is shown.
-    fn search_box_mut(&mut self, target: SearchTarget) -> Option<&mut SearchBox> {
-        match target {
-            SearchTarget::Header => Some(&mut self.search),
-            SearchTarget::From | SearchTarget::To => self.directions.as_mut()?.search_mut(target),
+    /// Runs a search field's place search, preferring places near the center of
+    /// the map, and sends the answer back through `wrap`.
+    fn search_places(
+        &self,
+        query: Query,
+        wrap: impl Fn(search_box::Message) -> Message + Send + 'static,
+    ) -> Task<cosmic::Action<Message>> {
+        match query {
+            Query::Later(text) => cosmic::task::future(async move {
+                tokio::time::sleep(SEARCH_DELAY).await;
+                wrap(search_box::Message::Debounced(text))
+            }),
+            Query::Now(text) => {
+                let near = self.map.center();
+                cosmic::task::future(async move {
+                    let result = photon::search(text.clone(), near).await;
+                    wrap(search_box::Message::Results(text, result))
+                })
+            }
         }
-    }
-
-    /// Searches places for `query`, preferring those near the center of the map.
-    fn search(&self, target: SearchTarget, query: String) -> Task<cosmic::Action<Message>> {
-        let near = self.map.center();
-        cosmic::task::future(async move {
-            let result = photon::search(query.clone(), near).await;
-            Message::SearchResults(target, query, result)
-        })
     }
 
     /// Header search results, shown under the search field.
@@ -699,7 +585,7 @@ impl AppModel {
 
         widget::container(
             self.search
-                .results_view(|index| Message::SearchSelect(SearchTarget::Header, index)),
+                .results_view(|index| Message::Search(search_box::Message::Select(index))),
         )
         .padding(spacing.space_xxs)
         .width(Length::Fixed(SEARCH_RESULTS_WIDTH))

@@ -11,7 +11,7 @@ use cosmic::widget::{self, icon};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-use crate::app::Message;
+use crate::directions::Message;
 use crate::fl;
 use crate::services::transitous::{Itinerary, Leg, Plan, RouteMode, Step};
 
@@ -73,12 +73,13 @@ pub fn plan_view<'a>(
     options.into()
 }
 
-/// Credits required by Transitous' usage policy, below the routes.
-pub fn attribution<'a>() -> Element<'a, Message> {
+/// Credits required by Transitous' usage policy, below the routes. Their links
+/// send `open_url`.
+pub fn attribution<'a, M: Clone + 'static>(open_url: impl Fn(String) -> M) -> Element<'a, M> {
     let link = |label: &'static str, url: &'static str| {
         widget::button::link(label)
             .padding(0)
-            .on_press(Message::LaunchUrl(url.to_owned()))
+            .on_press(open_url(url.to_owned()))
     };
 
     widget::row::with_capacity(4)
@@ -105,7 +106,7 @@ fn option<'a>(
         .selected(is_chosen)
         .width(Length::Fill)
         .padding([spacing.space_xs, spacing.space_s])
-        .on_press(Message::RouteChoose(choice))
+        .on_press(Message::Choose(choice))
         .into()
 }
 
@@ -237,7 +238,7 @@ fn stops_view<'a>(leg: &'a Leg, index: usize, open: bool) -> Element<'a, Message
     )
     .class(cosmic::theme::Button::Text)
     .padding(0)
-    .on_press(Message::RouteToggleStops(index));
+    .on_press(Message::ToggleStops(index));
 
     let stops = open.then(|| {
         let rows: Vec<Element<'a, Message>> = leg
