@@ -170,20 +170,8 @@ impl cosmic::Application for AppModel {
     fn view(&self) -> Element<'_, Self::Message> {
         let space_s = cosmic::theme::spacing().space_s;
         let content: Element<_> = match self.nav.active_data::<Page>().unwrap() {
-            Page::Page1 => {
-                let header = widget::row::with_capacity(2)
-                    .push(widget::text::title1(fl!("welcome")))
-                    .push(widget::text::title3(fl!("page-id", num = 1)))
-                    .align_y(Alignment::End)
-                    .spacing(space_s);
-
-                widget::column::with_capacity(2)
-                    .push(header)
-                    .push(self.map.view(Message::Map))
-                    .spacing(space_s)
-                    .height(Length::Fill)
-                    .into()
-            }
+            // The map fills all the space next to the nav bar, whether it is shown or not.
+            Page::Page1 => return self.map.view(Message::Map),
 
             Page::Page2 => {
                 let header = widget::row::with_capacity(2)

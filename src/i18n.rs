@@ -45,8 +45,10 @@ macro_rules! fl {
         i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id)
     }};
 
-    ($message_id:literal, $($args:expr),*) => {{
-        i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id, $($args), *)
+    // Arguments are forwarded as raw tokens: capturing `name = value` as `expr` makes
+    // rust-analyzer read it as an assignment instead of a named argument.
+    ($message_id:literal, $($args:tt)*) => {{
+        i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id, $($args)*)
     }};
 }
 
