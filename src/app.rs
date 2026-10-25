@@ -13,7 +13,7 @@ use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::futures::StreamExt;
 use cosmic::iced::{Length, Subscription, event, keyboard};
 use cosmic::prelude::*;
-use cosmic::widget::{self, about::About, icon, menu};
+use cosmic::widget::{self, about::About, icon, menu, popover};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -185,13 +185,23 @@ impl cosmic::Application for AppModel {
     /// into a search field.
     fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
         let search = if self.search_active {
-            widget::text_input::search_input(fl!("search-placeholder"), &self.search_input)
-                .width(Length::Fixed(SEARCH_INPUT_WIDTH))
-                .id(self.search_id.clone())
-                .on_clear(Message::SearchClear)
-                .on_input(Message::SearchInput)
-                .on_submit(|_| Message::SearchSubmit)
-                .into()
+            let input =
+                widget::text_input::search_input(fl!("search-placeholder"), &self.search_input)
+                    .width(Length::Fixed(SEARCH_INPUT_WIDTH))
+                    .id(self.search_id.clone())
+                    .on_clear(Message::SearchClear)
+                    .on_input(Message::SearchInput)
+                    .on_submit(|_| Message::SearchSubmit);
+
+            // Results drop down under the field, kept inside the window. No
+            // `on_close`: it also fires for presses on the results themselves.
+            let mut search = popover(input);
+            if !self.search_results.is_empty() {
+                search = search
+                    .popup(self.search_results_view())
+                    .position(popover::Position::Bottom);
+            }
+            search.into()
         } else {
             widget::button::icon(icon::from_name("system-search-symbolic"))
                 .padding(8)
@@ -250,12 +260,8 @@ impl cosmic::Application for AppModel {
     /// Application events will be processed through the view. Any messages emitted by
     /// events received by widgets will be passed to the update method.
     fn view(&self) -> Element<'_, Self::Message> {
-        // The map fills the window, with search results over it while shown.
-        let map = self.map.view(Message::Map);
-        if !self.search_active || self.search_results.is_empty() {
-            return map;
-        }
-        cosmic::iced::widget::stack![map, self.search_results_view()].into()
+        // The map fills the window; search results drop down from the header.
+        self.map.view(Message::Map)
     }
 
     /// Register subscriptions for this application.
@@ -317,6 +323,11 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::Map(event) => {
+                // Clicking the map hides search results, keeping the query.
+                if matches!(event, MapEvent::Click(_)) {
+                    self.search_results.clear();
+                    self.search_highlight = None;
+                }
                 let changes_place = matches!(event, MapEvent::Click(_) | MapEvent::ClosePanel);
                 let action = self.map.on_event(event);
                 if changes_place {
@@ -521,7 +532,7 @@ impl AppModel {
         })
     }
 
-    /// Search results, floating over the top-left corner of the map.
+    /// Search results, shown under the search field.
     fn search_results_view(&self) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
         let radius = cosmic::theme::active().cosmic().corner_radii.radius_s;
@@ -557,7 +568,8 @@ impl AppModel {
             .width(Length::Fixed(SEARCH_RESULTS_WIDTH))
             .class(cosmic::theme::Container::Dropdown)
             .apply(widget::container)
-            .padding(spacing.space_s)
+            // A small gap, so the list does not touch the field.
+            .padding([spacing.space_xxs, 0, 0, 0])
             .into()
     }
 
