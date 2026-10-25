@@ -3,18 +3,19 @@
 //! The directions form: transport mode, start and destination, and the routes
 //! found between them.
 
+use std::collections::HashSet;
+
 use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon, segmented_button};
-use jiff::Timestamp;
-use jiff::tz::TimeZone;
 
 use crate::app::Message;
 use crate::fl;
 use crate::map::camera::lat_lon;
 use crate::map::location::Position;
 use crate::map::poi::Poi;
-use crate::map::routing::{self, Itinerary, Plan, RouteMode};
+use crate::map::routing::{self, Plan, RouteMode};
+use crate::route_view::{self, Ends, RouteChoice};
 use crate::search_box::{SearchBox, SearchTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +125,10 @@ pub struct Directions {
     query: Option<RouteQuery>,
     /// Number of the latest request: answers to older ones are stale.
     latest_request: u64,
+    /// The route option whose details are shown.
+    chosen: Option<RouteChoice>,
+    /// Legs of the chosen option whose stops are listed.
+    open_stops: HashSet<usize>,
 }
 
 impl Directions {
@@ -147,6 +152,8 @@ impl Directions {
             route: RouteState::Idle,
             query: None,
             latest_request: 0,
+            chosen: None,
+            open_stops: HashSet::new(),
         };
         if let Some(position) = user {
             directions.set(SearchTarget::From, Endpoint::UserLocation(position));
@@ -276,6 +283,8 @@ impl Directions {
         let Some(query) = self.query else {
             return;
         };
+        self.chosen = None;
+        self.open_stops.clear();
         self.route = match result {
             Ok(plan) if plan.is_empty(query.mode) => RouteState::NotFound,
             Ok(plan) => RouteState::Found(plan),
@@ -284,6 +293,19 @@ impl Directions {
                 RouteState::Failed
             }
         };
+    }
+
+    /// Shows the details of a route option, or hides them if already shown.
+    pub fn choose(&mut self, choice: RouteChoice) {
+        self.chosen = (self.chosen != Some(choice)).then_some(choice);
+        self.open_stops.clear();
+    }
+
+    /// Lists the stops of a leg of the chosen option, or hides them.
+    pub fn toggle_stops(&mut self, leg: usize) {
+        if !self.open_stops.remove(&leg) {
+            self.open_stops.insert(leg);
+        }
     }
 
     fn start(&mut self, query: RouteQuery, page: Option<String>) -> RouteRequest {
@@ -374,8 +396,7 @@ impl Directions {
         Some(pages.into())
     }
 
-    /// The routes found, or the search's status: the part that scrolls. A plain
-    /// summary; the full itinerary view comes later.
+    /// The routes found, or the search's status: the part that scrolls.
     pub fn results_view(&self) -> Element<'_, Message> {
         let status = |text: String| widget::text::caption(text).into();
         let plan = match &self.route {
@@ -387,87 +408,14 @@ impl Directions {
             RouteState::Found(plan) => plan,
         };
 
-        let mut rows = widget::column::with_capacity(plan.transit.len() + 1)
-            .spacing(cosmic::theme::spacing().space_xxs);
-        if let Some(walk) = &plan.walk {
-            rows = rows.push(widget::text::body(walk_summary(walk)));
-        }
-        for itinerary in &plan.transit {
-            rows = rows.push(widget::text::body(transit_summary(itinerary)));
-        }
-
-        rows.into()
-    }
-}
-
-/// "Walk · 19 min · 1.4 km".
-fn walk_summary(walk: &Itinerary) -> String {
-    let distance: f64 = walk.legs.iter().filter_map(|leg| leg.distance).sum();
-    [fl!("travel-mode-foot"), format_duration(walk.duration), format_distance(distance)].join(" · ")
-}
-
-/// "15:01 → 15:11 · 10 min · Metro 1".
-fn transit_summary(itinerary: &Itinerary) -> String {
-    let lines: Vec<String> = itinerary
-        .legs
-        .iter()
-        .filter_map(|leg| {
-            let line = leg.line.as_ref()?;
-            let name = line.name.clone().unwrap_or_default();
-            Some(match transit_kind(&leg.mode) {
-                Some(kind) => format!("{kind} {name}").trim_end().to_owned(),
-                None => name,
-            })
-        })
-        .collect();
-
-    let times = format!(
-        "{} → {}",
-        format_time(itinerary.start_time),
-        format_time(itinerary.end_time)
-    );
-    [times, format_duration(itinerary.duration), lines.join(" › ")].join(" · ")
-}
-
-/// The kind of vehicle of a MOTIS mode, or `None` if the line name says enough.
-fn transit_kind(mode: &str) -> Option<String> {
-    Some(match mode {
-        "SUBWAY" | "METRO" => fl!("transit-metro"),
-        "BUS" | "COACH" => fl!("transit-bus"),
-        "TRAM" => fl!("transit-tram"),
-        "FERRY" => fl!("transit-ferry"),
-        "RAIL" | "HIGHSPEED_RAIL" | "LONG_DISTANCE" | "NIGHT_RAIL" | "REGIONAL_FAST_RAIL"
-        | "REGIONAL_RAIL" | "SUBURBAN" => fl!("transit-train"),
-        _ => return None,
-    })
-}
-
-/// Local time, such as "15:01".
-fn format_time(time: Timestamp) -> String {
-    time.to_zoned(TimeZone::system()).strftime("%H:%M").to_string()
-}
-
-/// "10 min", or "1 h 05" from an hour.
-fn format_duration(seconds: u64) -> String {
-    let minutes = seconds.div_ceil(60);
-    if minutes < 60 {
-        fl!("route-minutes", minutes = minutes)
-    } else {
-        let hours = minutes / 60;
-        let minutes = format!("{:02}", minutes % 60);
-        fl!("route-hours", hours = hours, minutes = minutes)
-    }
-}
-
-/// "850 m", or "1.4 km" from a kilometre.
-fn format_distance(meters: f64) -> String {
-    if meters < 1000.0 {
-        // To the nearest 10 m: walking distances are estimates.
-        let meters = ((meters / 10.0).round() * 10.0) as u64;
-        fl!("route-meters", meters = meters)
-    } else {
-        let kilometers = format!("{:.1}", meters / 1000.0);
-        fl!("route-kilometers", kilometers = kilometers)
+        let Some(query) = self.query else {
+            return widget::column::with_capacity(0).into();
+        };
+        let ends = Ends {
+            start: &self.from_search.input,
+            destination: &self.to_search.input,
+        };
+        route_view::plan_view(plan, query.mode, self.chosen, &self.open_stops, ends)
     }
 }
 
@@ -590,6 +538,21 @@ mod tests {
     }
 
     #[test]
+    fn stop_lists_open_and_reset() {
+        let mut directions = Directions::new(&place("Hôtel de Ville"), Some(here()));
+        directions.choose(RouteChoice::Transit(0));
+        directions.toggle_stops(1);
+        assert!(directions.open_stops.contains(&1));
+        directions.toggle_stops(1);
+        assert!(!directions.open_stops.contains(&1));
+
+        // Another option starts with its stop lists closed.
+        directions.toggle_stops(1);
+        directions.choose(RouteChoice::Transit(1));
+        assert!(directions.open_stops.is_empty());
+    }
+
+    #[test]
     fn stale_answers_are_dropped() {
         let mut directions = Directions::new(&place("Hôtel de Ville"), Some(here()));
         let first = directions.route_request().unwrap();
@@ -601,13 +564,5 @@ mod tests {
 
         directions.insert_route(second.id, Ok(Plan::default()));
         assert!(matches!(directions.route, RouteState::NotFound));
-    }
-
-    #[test]
-    fn durations_and_distances() {
-        assert_eq!(format_duration(600), fl!("route-minutes", minutes = 10));
-        assert_eq!(format_duration(3900), fl!("route-hours", hours = 1, minutes = "05"));
-        assert_eq!(format_distance(847.0), fl!("route-meters", meters = 850));
-        assert_eq!(format_distance(1358.0), fl!("route-kilometers", kilometers = "1.4"));
     }
 }

@@ -10,6 +10,7 @@ use crate::map::poi::{OsmId, Poi};
 use crate::map::routing::{self, Plan};
 use crate::map::search::{self, SearchResult};
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
+use crate::route_view::{self, RouteChoice};
 use crate::search_box::{SEARCH_DELAY, SearchBox, SearchTarget, Submit};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -78,6 +79,10 @@ pub enum Message {
     RouteFound(u64, Result<Plan, routing::Error>),
     /// Transit options leaving later (`true`) or earlier than those shown.
     RoutePage(bool),
+    /// Show or hide the details of a route option.
+    RouteChoose(RouteChoice),
+    /// Show or hide the stops of a leg of the chosen route option.
+    RouteToggleStops(usize),
     Arrow(Arrow),
 }
 
@@ -267,6 +272,7 @@ impl cosmic::Application for AppModel {
                 .title(fl!("directions"))
                 .actions(back)
                 .header(directions.form_view())
+                .footer(route_view::attribution())
             }
         })
     }
@@ -466,6 +472,18 @@ impl cosmic::Application for AppModel {
             Message::RouteFound(id, result) => {
                 if let Some(directions) = &mut self.directions {
                     directions.insert_route(id, result);
+                }
+            }
+
+            Message::RouteChoose(choice) => {
+                if let Some(directions) = &mut self.directions {
+                    directions.choose(choice);
+                }
+            }
+
+            Message::RouteToggleStops(leg) => {
+                if let Some(directions) = &mut self.directions {
+                    directions.toggle_stops(leg);
                 }
             }
 

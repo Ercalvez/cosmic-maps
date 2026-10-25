@@ -2,6 +2,7 @@
 
 mod app;
 mod directions;
+mod route_view;
 mod search_box;
 mod map;
 mod config;

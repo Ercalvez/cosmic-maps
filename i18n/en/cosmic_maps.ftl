@@ -38,6 +38,41 @@ transit-bus = Bus
 transit-tram = Tram
 transit-train = Train
 transit-ferry = Ferry
+route-walk-only = Walk only
+route-transfers = { $count ->
+    [0] No transfers
+    [one] 1 transfer
+   *[other] { $count } transfers
+}
+route-leg-walk = Walk { $distance } to { $place }
+route-leg-towards = towards { $headsign }
+route-leg-board = Board at { $stop } · { $time }
+route-leg-alight = Get off at { $stop } · { $time }
+route-leg-stops = { $count ->
+    [0] No stops in between
+    [one] 1 stop
+   *[other] { $count } stops
+}
+route-attribution = Routes:
+
+## Walking steps, from MOTIS' relative directions
+
+step-depart = Start
+step-continue = Continue
+step-left = Turn left
+step-right = Turn right
+step-slightly-left = Bear left
+step-slightly-right = Bear right
+step-hard-left = Turn sharp left
+step-hard-right = Turn sharp right
+step-roundabout = Go around the roundabout
+step-uturn = Make a U-turn
+step-elevator = Take the elevator
+step-stairs = Take the stairs
+step-enter-station = Enter the station
+step-exit-station = Exit the station
+step-follow-signs = Follow the signs
+step-onto = { $action } onto { $street }
 
 ## POI details
 

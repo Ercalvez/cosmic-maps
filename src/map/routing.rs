@@ -5,7 +5,7 @@
 //! `User-Agent` with a contact, with visible attribution of transitous.org/sources
 //! and OpenStreetMap. Maintainers ask to be contacted before heavy `/plan` use.
 
-#![expect(dead_code, reason = "steps, line colours and paths are shown in later phases")]
+#![expect(dead_code, reason = "paths and stop positions are drawn on the map in phase 4")]
 
 use std::time::Duration;
 
@@ -75,6 +75,8 @@ pub struct Leg {
     pub distance: Option<f64>,
     /// The line taken, for transit legs.
     pub line: Option<Line>,
+    /// Stops passed between boarding and getting off, for transit legs.
+    pub stops: Vec<PassedStop>,
     /// The leg's path, in Web Mercator coordinates spanning 0..1.
     pub path: Vec<(f64, f64)>,
     /// Turn-by-turn instructions, for walking legs.
@@ -93,6 +95,13 @@ pub struct Stop {
     pub name: String,
     /// Web Mercator coordinates spanning 0..1.
     pub position: (f64, f64),
+}
+
+/// A stop the vehicle calls at between boarding and getting off.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PassedStop {
+    pub name: String,
+    pub arrival: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,6 +205,14 @@ struct RawLeg {
     leg_geometry: Option<RawPolyline>,
     #[serde(default)]
     steps: Vec<RawStep>,
+    #[serde(default)]
+    intermediate_stops: Vec<RawStop>,
+}
+
+#[derive(Deserialize)]
+struct RawStop {
+    name: String,
+    arrival: Option<Timestamp>,
 }
 
 #[derive(Deserialize)]
@@ -267,6 +284,14 @@ impl RawLeg {
             duration: self.duration,
             distance: self.distance,
             line,
+            stops: self
+                .intermediate_stops
+                .into_iter()
+                .map(|stop| PassedStop {
+                    name: stop.name,
+                    arrival: stop.arrival,
+                })
+                .collect(),
             path: self
                 .leg_geometry
                 .map(|geometry| {
@@ -387,6 +412,8 @@ mod tests {
                     "to": {"name": "Hôtel de Ville", "lat": 48.857105, "lon": 2.3529568},
                     "routeShortName": "1", "routeColor": "ffbe00", "routeTextColor": "000000",
                     "headsign": "Château de Vincennes", "agencyName": "RATP",
+                    "intermediateStops": [{"name": "Châtelet", "lat": 48.858, "lon": 2.347,
+                                           "arrival": "2026-10-25T15:02:00Z"}],
                     "legGeometry": {"points": "_p~iF~ps|U_ulLnnqC_mqNvxq`@", "precision": 5, "length": 3}
                 }]
             }],
@@ -417,6 +444,12 @@ mod tests {
         assert_eq!(line.name.as_deref(), Some("1"));
         assert_eq!(line.color, Some(Color::from_rgb8(0xff, 0xbe, 0x00)));
         assert_eq!(line.headsign.as_deref(), Some("Château de Vincennes"));
+        assert_eq!(metro.stops.len(), 1);
+        assert_eq!(metro.stops[0].name, "Châtelet");
+        assert_eq!(
+            metro.stops[0].arrival,
+            Some("2026-10-25T15:02:00Z".parse::<Timestamp>().unwrap())
+        );
         assert!(metro.steps.is_empty());
     }
 
