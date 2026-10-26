@@ -1,104 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Walking, cycling, driving and public transit routes from Transitous, the
-//! community-run MOTIS service GNOME Maps also uses for public transit.
-//!
-//! Usage policy (transitous.org/api): open-source, non-commercial apps sending a
-//! `User-Agent` with a contact, with visible attribution of transitous.org/sources
-//! and OpenStreetMap. Maintainers ask to be contacted before heavy `/plan` use.
-
-use std::time::Duration;
+//! The parts of MOTIS responses that are used, and their conversion to routes.
 
 use cosmic::iced::Color;
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use super::http::{CLIENT, Error, RateLimit};
-use crate::domain::route::{
-    Itinerary, Leg, Line, PassedStop, Plan, RouteMode, Step, Stop, is_transit_mode,
-};
+use super::polyline::decode_polyline;
+use crate::domain::route::{Itinerary, Leg, Line, PassedStop, Plan, Step, Stop, is_transit_mode};
 use crate::geo::LatLon;
-
-const PLAN_URL: &str = "https://api.transitous.org/api/v6/plan";
-/// Transitous gives no numbers; plans are only requested on user actions, so one
-/// per second is plenty.
-static TRANSITOUS: RateLimit = RateLimit::new(Duration::from_secs(1));
-
-/// Routes from `from` to `to`, both latitude and longitude, leaving now, or the
-/// earlier or later page given by a cursor from a previous [`Plan`].
-pub async fn plan(
-    from: LatLon,
-    to: LatLon,
-    mode: RouteMode,
-    page: Option<String>,
-) -> Result<Plan, Error> {
-    TRANSITOUS.wait_turn().await;
-
-    let response: Response = CLIENT
-        .get(PLAN_URL)
-        .query(&query(from, to, mode, page))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-
-    Ok(response.into_plan())
-}
-
-/// The `/plan` query parameters.
-fn query(
-    from: LatLon,
-    to: LatLon,
-    mode: RouteMode,
-    page: Option<String>,
-) -> Vec<(&'static str, String)> {
-    // Without transit modes, only the route all the way by street is computed.
-    let transit_modes = if mode == RouteMode::Transit {
-        "TRANSIT"
-    } else {
-        ""
-    };
-    let mut query = vec![
-        ("fromPlace", format!("{},{}", from.lat, from.lon)),
-        ("toPlace", format!("{},{}", to.lat, to.lon)),
-        ("directModes", direct_mode(mode).to_owned()),
-        ("transitModes", transit_modes.to_owned()),
-        ("maxDirectTime", max_direct_time(mode).to_owned()),
-    ];
-    if mode == RouteMode::Bike {
-        // Flatter streets when the detour is small.
-        query.push(("elevationCosts", "LOW".to_owned()));
-    }
-    if let Some(page) = page {
-        query.push(("pageCursor", page));
-    }
-    query
-}
-
-/// The MOTIS mode of the route all the way by street.
-fn direct_mode(mode: RouteMode) -> &'static str {
-    match mode {
-        RouteMode::Walk | RouteMode::Transit => "WALK",
-        RouteMode::Bike => "BIKE",
-        RouteMode::Car => "CAR",
-    }
-}
-
-/// Longest route all the way by street searched, in seconds. The server's default
-/// of 30 minutes leaves out walks across a city.
-fn max_direct_time(mode: RouteMode) -> &'static str {
-    match mode {
-        RouteMode::Walk | RouteMode::Transit => "7200",
-        RouteMode::Bike => "14400",
-        RouteMode::Car => "43200",
-    }
-}
 
 /// The parts of a MOTIS `/api/v6/plan` response that are used.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Response {
+pub(super) struct Response {
     #[serde(default)]
     direct: Vec<RawItinerary>,
     #[serde(default)]
@@ -175,7 +90,7 @@ struct RawStep {
 }
 
 impl Response {
-    fn into_plan(self) -> Plan {
+    pub(super) fn into_plan(self) -> Plan {
         Plan {
             direct: self
                 .direct
@@ -283,57 +198,10 @@ fn hex_color(hex: &str) -> Option<Color> {
         .then(|| Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8))
 }
 
-/// Decodes an encoded polyline (Google's format) into latitudes and longitudes.
-/// `precision` is the number of decimals kept, 5 in Google's format, 6 in MOTIS.
-fn decode_polyline(encoded: &str, precision: u32) -> Vec<LatLon> {
-    let factor = 10f64.powi(precision as i32);
-    let mut bytes = encoded.bytes();
-    let mut next_delta = || -> Option<i64> {
-        let mut result = 0i64;
-        let mut shift = 0;
-        loop {
-            let chunk = i64::from(bytes.next()?) - 63;
-            result |= (chunk & 0x1f) << shift;
-            shift += 5;
-            if chunk < 0x20 {
-                break;
-            }
-        }
-        // Zigzag encoding: the lowest bit is the sign.
-        Some(if result & 1 == 1 {
-            !(result >> 1)
-        } else {
-            result >> 1
-        })
-    };
-
-    let mut points = Vec::new();
-    let (mut lat, mut lon) = (0i64, 0i64);
-    while let (Some(dlat), Some(dlon)) = (next_delta(), next_delta()) {
-        lat += dlat;
-        lon += dlon;
-        points.push(LatLon::new(lat as f64 / factor, lon as f64 / factor));
-    }
-    points
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decodes_polylines() {
-        // The example from Google's polyline format documentation.
-        let points = decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
-        let expected = [(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)];
-
-        assert_eq!(points.len(), expected.len());
-        for (point, (expected_lat, expected_lon)) in points.into_iter().zip(expected) {
-            assert!(
-                (point.lat - expected_lat).abs() < 1e-9 && (point.lon - expected_lon).abs() < 1e-9
-            );
-        }
-    }
+    use crate::domain::route::RouteMode;
 
     #[test]
     fn parses_hex_colors() {
@@ -585,57 +453,5 @@ mod tests {
         assert_eq!(leg.line, None);
         assert_eq!(leg.distance, Some(3724.0));
         assert_eq!(leg.steps[0].street, "Rue de Rivoli");
-    }
-
-    #[test]
-    fn queries_follow_the_mode() {
-        let louvre = LatLon::new(48.8606, 2.3376);
-        let gare_de_lyon = LatLon::new(48.8443, 2.3744);
-        let param = |mode, key| {
-            query(louvre, gare_de_lyon, mode, None)
-                .into_iter()
-                .find(|(name, _)| *name == key)
-                .map(|(_, value)| value)
-        };
-
-        assert_eq!(
-            param(RouteMode::Walk, "directModes").as_deref(),
-            Some("WALK")
-        );
-        assert_eq!(param(RouteMode::Walk, "transitModes").as_deref(), Some(""));
-        assert_eq!(
-            param(RouteMode::Transit, "directModes").as_deref(),
-            Some("WALK")
-        );
-        assert_eq!(
-            param(RouteMode::Transit, "transitModes").as_deref(),
-            Some("TRANSIT")
-        );
-        assert_eq!(
-            param(RouteMode::Bike, "directModes").as_deref(),
-            Some("BIKE")
-        );
-        assert_eq!(
-            param(RouteMode::Bike, "elevationCosts").as_deref(),
-            Some("LOW")
-        );
-        assert_eq!(param(RouteMode::Car, "directModes").as_deref(), Some("CAR"));
-        assert_eq!(param(RouteMode::Car, "elevationCosts"), None);
-        assert_eq!(
-            param(RouteMode::Car, "maxDirectTime").as_deref(),
-            Some("43200")
-        );
-        assert_eq!(
-            param(RouteMode::Walk, "fromPlace").as_deref(),
-            Some("48.8606,2.3376")
-        );
-
-        let page = query(
-            louvre,
-            gare_de_lyon,
-            RouteMode::Transit,
-            Some("LATER|1".to_owned()),
-        );
-        assert!(page.contains(&("pageCursor", "LATER|1".to_owned())));
     }
 }
