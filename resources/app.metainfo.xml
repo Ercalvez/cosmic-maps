@@ -8,6 +8,12 @@
   <icon type="remote" width="64" height="64" scale="1">
     https://github.com/Ercalvez/cosmic-maps/raw/main/resources/icons/hicolor/scalable/apps/icon.svg
   </icon>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Public transit directions, with the route drawn on the map</caption>
+      <image type="source" width="1600" height="813">https://raw.githubusercontent.com/Ercalvez/cosmic-maps/main/resources/screenshots/transit-directions.png</image>
+    </screenshot>
+  </screenshots>
   <url type="vcs-browser">https://github.com/Ercalvez/cosmic-maps</url>
   <launchable type="desktop-id">com.github.ercalvez.cosmic-maps.desktop</launchable>
   <provides>

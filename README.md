@@ -2,6 +2,8 @@
 
 Map application for COSMIC Desktop
 
+![Public transit directions from Gare de Lyon to Gare Montparnasse in Paris, with both lines drawn on the map and the steps listed beside it](resources/screenshots/transit-directions.png)
+
 ## Installation
 
 A [justfile](./justfile) is included by default for the [casey/just][just] command runner.
