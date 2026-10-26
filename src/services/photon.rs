@@ -175,7 +175,7 @@ mod tests {
 
         let station = &results[0];
         assert_eq!(station.poi.name, "Alexanderplatz");
-        assert_eq!(station.poi.osm_id, Some(OsmId::Node(3908141014)));
+        assert_eq!(station.poi.osm_id, Some(OsmId::Node(3_908_141_014)));
         assert_eq!(station.poi.subclass.as_deref(), Some("station"));
         assert_eq!(
             station.area.as_deref(),

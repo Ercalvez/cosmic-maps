@@ -105,7 +105,7 @@ impl SearchBox {
     /// Records typed text. Returns the query to search after `SEARCH_DELAY`, if it
     /// is long enough.
     fn on_input(&mut self, input: String) -> Option<String> {
-        self.input = input.clone();
+        self.input.clone_from(&input);
         self.highlight = None;
         if input.trim().chars().count() < SEARCH_MIN_CHARS {
             self.hide_results();

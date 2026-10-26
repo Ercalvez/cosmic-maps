@@ -312,6 +312,7 @@ impl cosmic::Application for AppModel {
         Subscription::batch(subscriptions)
     }
 
+    #[expect(clippy::too_many_lines, reason = "split in a later refactor")]
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::Map(event) => {
@@ -334,7 +335,7 @@ impl cosmic::Application for AppModel {
                 } else {
                     Task::none()
                 };
-                return Task::batch([route, self.run_map_action(action)]);
+                return Task::batch([route, Self::run_map_action(action)]);
             }
 
             Message::SearchActivate => {
@@ -354,7 +355,7 @@ impl cosmic::Application for AppModel {
                 Some(search_box::Action::Pick(result)) => {
                     let action = self.map.show_place(result.poi);
                     let route = self.sync_place_drawer();
-                    return Task::batch([route, self.run_map_action(action)]);
+                    return Task::batch([route, Self::run_map_action(action)]);
                 }
                 None => {}
             },
@@ -527,7 +528,7 @@ impl AppModel {
     }
 
     /// Carries out work the map asked for.
-    fn run_map_action(&self, action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
+    fn run_map_action(action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
         match action {
             Some(MapAction::FetchDetails(osm_id)) => cosmic::task::future(async move {
                 Message::PoiDetails(osm_id, nominatim::fetch(osm_id).await)

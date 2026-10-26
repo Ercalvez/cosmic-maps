@@ -114,7 +114,7 @@ pub async fn reverse(lat: f64, lon: f64, zoom: u8) -> Result<Option<(Poi, PoiDet
 
     Ok(match response {
         ReverseResponse::Nothing { .. } => None,
-        ReverseResponse::Found(place) => place.into_poi(),
+        ReverseResponse::Found(place) => (*place).into_poi(),
     })
 }
 
@@ -127,7 +127,7 @@ enum ReverseResponse {
         #[expect(dead_code, reason = "only tells the two answers apart")]
         error: String,
     },
-    Found(Place),
+    Found(Box<Place>),
 }
 
 /// The parts of a Nominatim `jsonv2` result that are used.
@@ -367,7 +367,7 @@ mod tests {
         let (poi, details) = place.into_poi().unwrap();
 
         assert_eq!(poi.name, "10 Rue de Rivoli");
-        assert_eq!(poi.osm_id, Some(OsmId::Node(703432291)));
+        assert_eq!(poi.osm_id, Some(OsmId::Node(703_432_291)));
         assert_eq!(poi.subclass.as_deref(), Some("house"));
         assert_eq!(
             details.address.as_deref(),

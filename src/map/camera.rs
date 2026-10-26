@@ -76,7 +76,7 @@ impl Camera {
             .min(fit(max.1 - min.1, available(viewport.height)))
             .clamp(MIN_ZOOM, MAX_ZOOM);
 
-        Self::centered_on(((min.0 + max.0) / 2.0, (min.1 + max.1) / 2.0), zoom)
+        Self::centered_on((min.0.midpoint(max.0), min.1.midpoint(max.1)), zoom)
     }
 
     /// Latitude and longitude of the center of the view.

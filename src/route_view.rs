@@ -28,6 +28,7 @@ pub enum RouteChoice {
 }
 
 /// Names for the trip's ends, which MOTIS calls `START` and `END`.
+#[derive(Clone, Copy)]
 pub struct Ends<'a> {
     pub start: &'a str,
     pub destination: &'a str,
@@ -99,11 +100,11 @@ pub fn attribution<'a, M: Clone + 'static>(open_url: impl Fn(String) -> M) -> El
 }
 
 /// A route option to choose, highlighted while chosen.
-fn option<'a>(
-    content: Element<'a, Message>,
+fn option(
+    content: Element<'_, Message>,
     choice: RouteChoice,
     is_chosen: bool,
-) -> Element<'a, Message> {
+) -> Element<'_, Message> {
     let spacing = cosmic::theme::spacing();
     let radius = cosmic::theme::active().cosmic().corner_radii.radius_s;
 
@@ -131,7 +132,7 @@ fn walk_option<'a>(walk: &Itinerary) -> Element<'a, Message> {
 }
 
 /// Departure → arrival and duration, then the lines taken and the transfers.
-fn transit_option<'a>(itinerary: &'a Itinerary) -> Element<'a, Message> {
+fn transit_option(itinerary: &Itinerary) -> Element<'_, Message> {
     let (estimated, scheduled) = itinerary.durations();
     let heading = widget::row::with_capacity(5)
         .push(time_view(itinerary.start(), TextStyle::Heading))
@@ -575,7 +576,7 @@ fn format_distance(meters: f64) -> String {
         let meters = ((meters / 10.0).round() * 10.0) as u64;
         fl!("route-meters", meters = meters)
     } else {
-        let decimals = if meters < 100_000.0 { 1 } else { 0 };
+        let decimals = usize::from(meters < 100_000.0);
         let kilometers = format!("{:.*}", decimals, meters / 1000.0);
         fl!("route-kilometers", kilometers = kilometers)
     }

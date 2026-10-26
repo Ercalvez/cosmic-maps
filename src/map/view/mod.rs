@@ -54,7 +54,7 @@ const PLACE_ZOOM: f64 = 16.0;
 const MAX_FALLBACK_LEVELS: u8 = 6;
 
 /// Interactions reported by the map widget.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum MapEvent {
     /// Move the map content by this many screen pixels.
     Pan {
@@ -75,7 +75,7 @@ pub enum MapEvent {
 }
 
 /// Work the map needs the app to do, returned from [`MapView::on_event`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum MapAction {
     /// Fetch details with [`nominatim::fetch`](crate::services::nominatim::fetch) and pass them to
     /// [`MapView::insert_details`].
@@ -107,6 +107,7 @@ pub enum DetailsState {
 }
 
 /// What the map has selected, for the place panel.
+#[derive(Clone, Copy)]
 pub enum Place<'a> {
     Selected {
         poi: &'a Poi,
@@ -589,7 +590,7 @@ fn lookup_detail(zoom: f64) -> u8 {
 }
 
 /// The POI closest to `point` within `radius` pixels.
-fn closest_poi<'a>(pois: Vec<(&'a Poi, Point)>, point: Point, radius: f32) -> Option<&'a Poi> {
+fn closest_poi(pois: Vec<(&Poi, Point)>, point: Point, radius: f32) -> Option<&Poi> {
     pois.into_iter()
         .map(|(poi, position)| (poi, position.distance(point)))
         .filter(|(_, distance)| *distance <= radius)

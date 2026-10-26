@@ -27,6 +27,7 @@ pub(super) struct MarkerCanvas<'a> {
 impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for MarkerCanvas<'_> {
     type State = ();
 
+    #[expect(clippy::too_many_lines, reason = "split in a later refactor")]
     fn draw(
         &self,
         _state: &(),

@@ -120,7 +120,7 @@ async fn create_map(style: Style, tx: Sender<MapImage>) -> HeadlessMap {
     let (kernel, renderer) = create_headless_renderer(TILE_SIZE, TILE_SIZE, None).await;
 
     let plugins: Vec<Box<dyn Plugin<_>>> = vec![
-        Box::new(RenderPlugin::default()),
+        Box::new(RenderPlugin),
         Box::new(VectorPlugin::<DefaultVectorTransferables>::default()),
         Box::new(RasterPlugin::<DefaultRasterTransferables>::default()),
         // Copies the rendered texture into a CPU-readable buffer.

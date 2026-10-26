@@ -152,7 +152,9 @@ pub fn parse_pois(data: &[u8], tile: TileId, languages: &[String]) -> Vec<Poi> {
 fn string_tag(layer: &tile::Layer, feature: &tile::Feature, key: usize) -> Option<String> {
     let pair = feature
         .tags
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .find(|pair| pair[0] as usize == key)?;
 
     layer.values.get(pair[1] as usize)?.string_value.clone()
@@ -161,7 +163,9 @@ fn string_tag(layer: &tile::Layer, feature: &tile::Feature, key: usize) -> Optio
 fn integer_tag(layer: &tile::Layer, feature: &tile::Feature, key: usize) -> Option<u32> {
     let pair = feature
         .tags
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .find(|pair| pair[0] as usize == key)?;
     let value = layer.values.get(pair[1] as usize)?;
 

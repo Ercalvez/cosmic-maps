@@ -614,7 +614,7 @@ mod tests {
             metro.stops[0].arrival,
             Some("2026-10-25T15:02:00Z".parse::<Timestamp>().unwrap())
         );
-        assert!(metro.steps.is_empty());
+        assert_eq!(metro.steps, Vec::new());
     }
 
     /// A walk to Louvre - Rivoli and a Metro 1 ride to Hôtel de Ville, Paris, scheduled

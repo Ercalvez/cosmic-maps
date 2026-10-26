@@ -1,0 +1,2 @@
+# Product and format names in doc comments that are not code.
+doc-valid-idents = ["MapLibre", "GeoClue", "OpenMapTiles", "GeoJSON", "MoveTo", ".."]

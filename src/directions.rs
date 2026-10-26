@@ -418,10 +418,9 @@ impl Directions {
         }
         let directs = usize::from(plan.direct.is_some());
         let chosen = match self.chosen {
-            Some(RouteChoice::Direct) => 0,
             Some(RouteChoice::Transit(index)) => directs + index,
             None if mode == RouteMode::Transit && !plan.transit.is_empty() => directs,
-            None => 0,
+            Some(RouteChoice::Direct) | None => 0,
         };
 
         Some(RouteOverlay {
@@ -559,12 +558,7 @@ impl Directions {
 }
 
 /// A labelled place field, with its search results under it while shown.
-fn field<'a>(
-    field: Field,
-    label: String,
-    hint: String,
-    search: &'a SearchBox,
-) -> Element<'a, Message> {
+fn field(field: Field, label: String, hint: String, search: &SearchBox) -> Element<'_, Message> {
     let input = widget::text_input::text_input(hint, &search.input)
         .on_input(move |text| Message::Field(field, search_box::Message::Input(text)))
         .on_submit(move |_| Message::Field(field, search_box::Message::Submit));
@@ -626,7 +620,7 @@ mod tests {
 
         let directions = Directions::new(&place("Hôtel de Ville"), None);
         assert!(matches!(directions.from, Endpoint::Unset));
-        assert!(directions.from_search.input.is_empty());
+        assert_eq!(directions.from_search.input, "");
     }
 
     #[test]
