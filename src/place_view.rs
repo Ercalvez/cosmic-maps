@@ -5,10 +5,18 @@
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
-use crate::app::Message;
 use crate::domain::place::{Poi, PoiDetails, Wheelchair};
 use crate::fl;
 use crate::map::view::{DetailsState, Place};
+
+/// What the panel's buttons and links ask for.
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// The Directions button.
+    OpenDirections,
+    /// A link, such as a website or a `tel:` URI.
+    OpenUrl(String),
+}
 
 /// The panel's content; the drawer provides the close button and the scrolling.
 pub fn view(place: Place<'_>) -> Element<'_, Message> {
@@ -67,7 +75,7 @@ fn details_rows<'a>(details: &'a PoiDetails) -> Option<Element<'a, Message>> {
         // `link` needs an owned label.
         widget::button::link(label.to_owned())
             .padding(0)
-            .on_press(Message::LaunchUrl(url))
+            .on_press(Message::OpenUrl(url))
             .into()
     };
 

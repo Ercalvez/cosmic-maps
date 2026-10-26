@@ -8,7 +8,25 @@ use cosmic::iced::keyboard::key::{Named, Physical};
 use cosmic::iced::keyboard::{Key, Modifiers};
 use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
 
-use crate::app::{Arrow, MenuAction};
+/// Directions the arrow keys move the view or the search results in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrow {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// What a shortcut, or the same entry in a menu, does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuAction {
+    About,
+    ZoomIn,
+    ZoomOut,
+    /// Show the user's position.
+    Locate,
+    Pan(Arrow),
+}
 
 /// One shortcut per action, the one menus show.
 pub fn key_binds() -> HashMap<KeyBind, MenuAction> {

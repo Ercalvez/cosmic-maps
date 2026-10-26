@@ -8,7 +8,7 @@ use crate::directions::{self, Directions, RouteRequest};
 use crate::domain::place::{OsmId, Poi, PoiDetails};
 use crate::fl;
 use crate::geo::{LatLon, Position};
-use crate::key_bind;
+use crate::key_bind::{self, Arrow, MenuAction};
 use crate::map::style::MapPalette;
 use crate::map::{DetailsAnswer, MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
@@ -73,21 +73,12 @@ pub enum Message {
     SearchClear,
     /// The header search field.
     Search(search_box::Message),
-    /// The place panel's Directions button.
-    OpenDirections,
+    Place(place_view::Message),
     DirectionsBack,
     Directions(directions::Message),
     /// A key pressed that no widget used, for the shortcuts.
     Key(keyboard::Modifiers, keyboard::Key, keyboard::key::Physical),
     Arrow(Arrow),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arrow {
-    Left,
-    Right,
-    Up,
-    Down,
 }
 
 impl cosmic::Application for AppModel {
@@ -255,7 +246,7 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::About),
             ),
             ContextPage::Place => context_drawer::context_drawer(
-                place_view::view(self.map.place()?),
+                place_view::view(self.map.place()?).map(Message::Place),
                 Message::Map(MapEvent::ClosePanel),
             ),
             ContextPage::Directions => {
@@ -362,7 +353,11 @@ impl cosmic::Application for AppModel {
                 None => {}
             },
 
-            Message::OpenDirections => {
+            Message::Place(place_view::Message::OpenUrl(url)) => {
+                return self.update(Message::LaunchUrl(url));
+            }
+
+            Message::Place(place_view::Message::OpenDirections) => {
                 if let Some(place) = self.map.selected() {
                     let mut directions = Directions::new(place, self.map.user_position());
                     let actions = directions.refresh();
@@ -630,16 +625,6 @@ pub enum ContextPage {
     Place,
     /// The directions form, to the selected place.
     Directions,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MenuAction {
-    About,
-    ZoomIn,
-    ZoomOut,
-    /// Show the user's position.
-    Locate,
-    Pan(Arrow),
 }
 
 impl menu::action::MenuAction for MenuAction {
