@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use super::http::{CLIENT, Error, RateLimit};
 use super::join;
-use crate::map::camera::world_position;
+use crate::geo::LatLon;
 use crate::map::poi::{OsmId, Poi, system_languages};
 
 const SEARCH_URL: &str = "https://photon.komoot.io/api/";
@@ -37,12 +37,11 @@ pub struct SearchResult {
     pub area: Option<String>,
 }
 
-/// Searches places matching `query`, preferring those near `near` (latitude and
-/// longitude).
-pub async fn search(query: String, near: (f64, f64)) -> Result<Vec<SearchResult>, Error> {
+/// Searches places matching `query`, preferring those near `near`.
+pub async fn search(query: String, near: LatLon) -> Result<Vec<SearchResult>, Error> {
     PHOTON.wait_turn().await;
 
-    let (lat, lon) = (near.0.to_string(), near.1.to_string());
+    let (lat, lon) = (near.lat.to_string(), near.lon.to_string());
     let response: Response = CLIENT
         .get(SEARCH_URL)
         .query(&[
@@ -133,7 +132,7 @@ impl SearchResult {
                     (Some("R"), Some(id)) => Some(OsmId::Relation(id)),
                     _ => None,
                 },
-                position: world_position(lat, lon),
+                position: LatLon::new(lat, lon).to_world(),
             },
         })
     }

@@ -6,6 +6,7 @@ use geozero::mvt::{Message, Tile, tile};
 use i18n_embed::DesktopLanguageRequester;
 
 use super::camera::TileId;
+use crate::geo::WorldPoint;
 
 /// OpenMapTiles layer holding points of interest.
 const POI_LAYER: &str = "poi";
@@ -26,8 +27,7 @@ pub struct Poi {
     /// treated as least important.
     pub rank: u32,
     pub osm_id: Option<OsmId>,
-    /// Web Mercator position, with the world spanning 0..1 on both axes.
-    pub position: (f64, f64),
+    pub position: WorldPoint,
 }
 
 impl Poi {
@@ -139,7 +139,7 @@ pub fn parse_pois(data: &[u8], tile: TileId, languages: &[String]) -> Vec<Poi> {
                     .and_then(|key| integer_tag(layer, feature, key))
                     .unwrap_or(u32::MAX),
                 osm_id: feature.id.and_then(OsmId::from_feature_id),
-                position: (
+                position: WorldPoint::new(
                     (f64::from(tile.x) + f64::from(x) / extent) / tiles_per_side,
                     (f64::from(tile.y) + f64::from(y) / extent) / tiles_per_side,
                 ),

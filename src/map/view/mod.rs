@@ -15,11 +15,12 @@ use cosmic::iced::{Length, Point, Rectangle, Size};
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
-use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon, world_position, zoom_showing};
+use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, zoom_showing};
 use super::location::Position;
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
 use super::style::MapPalette;
+use crate::geo::{LatLon, WorldBounds, WorldPoint};
 use crate::services::{
     self,
     nominatim::{PoiDetails, Shape},
@@ -27,10 +28,10 @@ use crate::services::{
 use canvas::MapCanvas;
 use markers::MarkerCanvas;
 pub use routes::RouteOverlay;
-use routes::{ROUTE_PADDING, bounds, route_points};
+use routes::{ROUTE_PADDING, route_points};
 
 /// View on the first run, until the user's position is known: Berlin.
-const INITIAL_CENTER: (f64, f64) = (52.52, 13.405);
+const INITIAL_CENTER: LatLon = LatLon::new(52.52, 13.405);
 const INITIAL_ZOOM: f64 = 12.0;
 
 /// Zoom levels per click on the zoom buttons.
@@ -82,12 +83,7 @@ pub enum MapAction {
     FetchDetails(OsmId),
     /// Find what is at a place with [`nominatim::reverse`](crate::services::nominatim::reverse) and pass it to
     /// [`MapView::insert_reverse`].
-    Reverse {
-        request: u64,
-        lat: f64,
-        lon: f64,
-        zoom: u8,
-    },
+    Reverse { request: u64, at: LatLon, zoom: u8 },
 }
 
 /// A click that hit no POI, waiting for Nominatim to say what is there.
@@ -95,7 +91,7 @@ pub enum MapAction {
 struct Lookup {
     request: u64,
     /// Where the click was, in Web Mercator coordinates spanning 0..1.
-    position: (f64, f64),
+    position: WorldPoint,
 }
 
 /// Extra information about a POI, by OpenStreetMap object.
@@ -159,19 +155,19 @@ pub struct MapView {
 }
 
 impl MapView {
-    /// Creates the map, looking at `start` (latitude, longitude, zoom) if given. The
+    /// Creates the map, looking at `start` (a place and a zoom) if given. The
     /// stream yields each tile when it is rendered; feed them back through
     /// [`MapView::insert_tile`].
     pub fn new(
         palette: MapPalette,
-        start: Option<(f64, f64, f64)>,
+        start: Option<(LatLon, f64)>,
     ) -> (Self, impl Stream<Item = RenderedTile> + Send + 'static) {
-        let (lat, lon, zoom) = start.unwrap_or((INITIAL_CENTER.0, INITIAL_CENTER.1, INITIAL_ZOOM));
+        let (center, zoom) = start.unwrap_or((INITIAL_CENTER, INITIAL_ZOOM));
         let (state, tiles) = MapState::new(palette);
 
         let map = Self {
             state,
-            camera: Camera::from_lat_lon(lat, lon, zoom),
+            camera: Camera::from_lat_lon(center, zoom),
             viewport: Size::ZERO,
             tiles: HashMap::new(),
             palette,
@@ -245,7 +241,7 @@ impl MapView {
     }
 
     /// Latitude and longitude of the center of the map.
-    pub fn center(&self) -> (f64, f64) {
+    pub fn center(&self) -> LatLon {
         self.camera.center_lat_lon()
     }
 
@@ -277,7 +273,6 @@ impl MapView {
     /// Starts finding what is at `point`, which hit no POI.
     fn look_up(&mut self, point: Point) -> MapAction {
         let position = self.camera.to_world(point, self.viewport);
-        let (lat, lon) = lat_lon(position);
         // The panel shows the lookup, not the previous place, until it answers.
         self.selected = None;
         self.next_lookup += 1;
@@ -288,8 +283,7 @@ impl MapView {
 
         MapAction::Reverse {
             request: self.next_lookup,
-            lat,
-            lon,
+            at: position.to_lat_lon(),
             zoom: lookup_detail(self.camera.zoom()),
         }
     }
@@ -514,9 +508,9 @@ impl MapView {
             span if span > 0.0 => span,
             _ => DEFAULT_SPAN,
         };
-        let zoom = zoom_showing(user.accuracy, user.latitude, span).min(LOCATED_MAX_ZOOM);
+        let zoom = zoom_showing(user.accuracy, user.lat_lon.lat, span).min(LOCATED_MAX_ZOOM);
 
-        self.camera = Camera::centered_on(world_position(user.latitude, user.longitude), zoom);
+        self.camera = Camera::centered_on(user.lat_lon.to_world(), zoom);
         self.request_tiles();
     }
 
@@ -549,7 +543,8 @@ impl MapView {
         let Some(routes) = &self.routes else {
             return;
         };
-        let Some((min, max)) = bounds(routes.itineraries.iter().flat_map(route_points)) else {
+        let Some(bounds) = WorldBounds::around(routes.itineraries.iter().flat_map(route_points))
+        else {
             return;
         };
 
@@ -559,7 +554,7 @@ impl MapView {
             self.fit_pending = true;
             return;
         }
-        self.camera = Camera::fitting(min, max, self.viewport, ROUTE_PADDING);
+        self.camera = Camera::fitting(bounds, self.viewport, ROUTE_PADDING);
         self.request_tiles();
     }
 

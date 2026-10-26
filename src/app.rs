@@ -6,6 +6,7 @@
 use crate::config::{MapPosition, State};
 use crate::directions::{self, Directions, RouteRequest};
 use crate::fl;
+use crate::geo::LatLon;
 use crate::key_bind;
 use crate::map::location::{self, Position};
 use crate::map::poi::{OsmId, Poi};
@@ -123,7 +124,9 @@ impl cosmic::Application for AppModel {
             .license(env!("CARGO_PKG_LICENSE"));
 
         let (state_handle, state) = State::load(Self::APP_ID);
-        let start = state.map.map(|map| (map.latitude, map.longitude, map.zoom));
+        let start = state
+            .map
+            .map(|map| (LatLon::new(map.latitude, map.longitude), map.zoom));
         let palette = MapPalette::from_theme(cosmic::theme::active().cosmic());
         let (map, tiles) = MapView::new(palette, start);
 
@@ -533,13 +536,8 @@ impl AppModel {
             Some(MapAction::FetchDetails(osm_id)) => cosmic::task::future(async move {
                 Message::PoiDetails(osm_id, nominatim::fetch(osm_id).await)
             }),
-            Some(MapAction::Reverse {
-                request,
-                lat,
-                lon,
-                zoom,
-            }) => cosmic::task::future(async move {
-                Message::Reverse(request, nominatim::reverse(lat, lon, zoom).await)
+            Some(MapAction::Reverse { request, at, zoom }) => cosmic::task::future(async move {
+                Message::Reverse(request, nominatim::reverse(at, zoom).await)
             }),
             None => Task::none(),
         }
@@ -589,10 +587,10 @@ impl AppModel {
         let Some(handle) = &self.state_handle else {
             return;
         };
-        let (latitude, longitude) = self.map.center();
+        let center = self.map.center();
         let map = MapPosition {
-            latitude,
-            longitude,
+            latitude: center.lat,
+            longitude: center.lon,
             zoom: self.map.zoom(),
         };
         if let Err(err) = self.state.clone().set_map(handle, Some(map)) {

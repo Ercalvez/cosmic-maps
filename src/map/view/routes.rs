@@ -5,6 +5,7 @@
 use cosmic::iced::widget::canvas::{self, Frame, Path};
 use cosmic::iced::{Color, Size};
 
+use crate::geo::WorldPoint;
 use crate::map::camera::Camera;
 use crate::map::style::MapPalette;
 use crate::services::transitous::{Itinerary, Leg};
@@ -30,21 +31,13 @@ pub struct RouteOverlay {
 }
 
 /// Every point of a route: its paths and its stops.
-pub(super) fn route_points(itinerary: &Itinerary) -> impl Iterator<Item = (f64, f64)> + '_ {
+pub(super) fn route_points(itinerary: &Itinerary) -> impl Iterator<Item = WorldPoint> + '_ {
     itinerary.legs.iter().flat_map(|leg| {
         leg.path
             .iter()
             .copied()
             .chain([leg.from.position, leg.to.position])
             .chain(leg.stops.iter().map(|stop| stop.position))
-    })
-}
-
-/// The smallest box holding all `points`, or `None` if there are none.
-pub(super) fn bounds(points: impl Iterator<Item = (f64, f64)>) -> Option<((f64, f64), (f64, f64))> {
-    points.fold(None, |bounds, (x, y)| {
-        let ((min_x, min_y), (max_x, max_y)) = bounds.unwrap_or(((x, y), (x, y)));
-        Some(((min_x.min(x), min_y.min(y)), (max_x.max(x), max_y.max(y))))
     })
 }
 
@@ -152,7 +145,7 @@ pub(super) fn draw_route_stops(
     palette: &MapPalette,
     accent: Color,
 ) {
-    let dot = |frame: &mut Frame, position: (f64, f64), radius: f32, fill: Color, ring: Color| {
+    let dot = |frame: &mut Frame, position: WorldPoint, radius: f32, fill: Color, ring: Color| {
         let circle = Path::circle(camera.to_screen(position, viewport), radius);
         frame.fill(&circle, fill);
         frame.stroke(

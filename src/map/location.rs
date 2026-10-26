@@ -8,13 +8,14 @@ use cosmic::dialog::ashpd::{self, AppID};
 use cosmic::iced::futures::channel::mpsc::Sender;
 use cosmic::iced::futures::{SinkExt, Stream, StreamExt};
 
+use crate::geo::LatLon;
+
 /// Moves shorter than this, in meters, are not reported.
 const DISTANCE_THRESHOLD: u32 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
-    pub latitude: f64,
-    pub longitude: f64,
+    pub lat_lon: LatLon,
     /// Radius of the area the user is in, in meters.
     pub accuracy: f64,
 }
@@ -47,8 +48,7 @@ async fn watch(app_id: &str, output: &mut Sender<Result<Position, String>>) -> a
     // The session stays open, and positions keep coming, while this runs.
     while let Some(location) = locations.next().await {
         let position = Position {
-            latitude: location.latitude(),
-            longitude: location.longitude(),
+            lat_lon: LatLon::new(location.latitude(), location.longitude()),
             accuracy: location.accuracy(),
         };
         if output.send(Ok(position)).await.is_err() {

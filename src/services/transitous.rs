@@ -14,7 +14,7 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::http::{CLIENT, Error, RateLimit};
-use crate::map::camera::world_position;
+use crate::geo::{LatLon, WorldPoint};
 
 const PLAN_URL: &str = "https://api.transitous.org/api/v6/plan";
 /// Transitous gives no numbers; plans are only requested on user actions, so one
@@ -140,7 +140,7 @@ pub struct Leg {
     /// Stops passed between boarding and getting off, for transit legs.
     pub stops: Vec<PassedStop>,
     /// The leg's path, in Web Mercator coordinates spanning 0..1.
-    pub path: Vec<(f64, f64)>,
+    pub path: Vec<WorldPoint>,
     /// Turn-by-turn instructions, for street legs.
     pub steps: Vec<Step>,
 }
@@ -174,8 +174,7 @@ impl Leg {
 pub struct Stop {
     /// Stop name; MOTIS names the trip's ends `START` and `END`.
     pub name: String,
-    /// Web Mercator coordinates spanning 0..1.
-    pub position: (f64, f64),
+    pub position: WorldPoint,
 }
 
 /// A stop the vehicle calls at between boarding and getting off.
@@ -184,8 +183,7 @@ pub struct PassedStop {
     pub name: String,
     pub arrival: Option<Timestamp>,
     pub scheduled_arrival: Option<Timestamp>,
-    /// Web Mercator coordinates spanning 0..1.
-    pub position: (f64, f64),
+    pub position: WorldPoint,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,8 +211,8 @@ pub struct Step {
 /// Routes from `from` to `to`, both latitude and longitude, leaving now, or the
 /// earlier or later page given by a cursor from a previous [`Plan`].
 pub async fn plan(
-    from: (f64, f64),
-    to: (f64, f64),
+    from: LatLon,
+    to: LatLon,
     mode: RouteMode,
     page: Option<String>,
 ) -> Result<Plan, Error> {
@@ -234,8 +232,8 @@ pub async fn plan(
 
 /// The `/plan` query parameters.
 fn query(
-    from: (f64, f64),
-    to: (f64, f64),
+    from: LatLon,
+    to: LatLon,
     mode: RouteMode,
     page: Option<String>,
 ) -> Vec<(&'static str, String)> {
@@ -246,8 +244,8 @@ fn query(
         ""
     };
     let mut query = vec![
-        ("fromPlace", format!("{},{}", from.0, from.1)),
-        ("toPlace", format!("{},{}", to.0, to.1)),
+        ("fromPlace", format!("{},{}", from.lat, from.lon)),
+        ("toPlace", format!("{},{}", to.lat, to.lon)),
         ("directModes", mode.direct_mode().to_owned()),
         ("transitModes", transit_modes.to_owned()),
         ("maxDirectTime", mode.max_direct_time().to_owned()),
@@ -443,7 +441,7 @@ impl RawLeg {
                     name: stop.name,
                     arrival: stop.arrival,
                     scheduled_arrival: stop.scheduled_arrival,
-                    position: world_position(stop.lat, stop.lon),
+                    position: LatLon::new(stop.lat, stop.lon).to_world(),
                 })
                 .collect(),
             path: self
@@ -451,7 +449,7 @@ impl RawLeg {
                 .map(|geometry| {
                     decode_polyline(&geometry.points, geometry.precision)
                         .into_iter()
-                        .map(|(lat, lon)| world_position(lat, lon))
+                        .map(LatLon::to_world)
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -472,7 +470,7 @@ impl RawPlace {
     fn into_stop(self) -> Stop {
         Stop {
             name: self.name,
-            position: world_position(self.lat, self.lon),
+            position: LatLon::new(self.lat, self.lon).to_world(),
         }
     }
 }
@@ -486,7 +484,7 @@ fn hex_color(hex: &str) -> Option<Color> {
 
 /// Decodes an encoded polyline (Google's format) into latitudes and longitudes.
 /// `precision` is the number of decimals kept, 5 in Google's format, 6 in MOTIS.
-fn decode_polyline(encoded: &str, precision: u32) -> Vec<(f64, f64)> {
+fn decode_polyline(encoded: &str, precision: u32) -> Vec<LatLon> {
     let factor = 10f64.powi(precision as i32);
     let mut bytes = encoded.bytes();
     let mut next_delta = || -> Option<i64> {
@@ -513,7 +511,7 @@ fn decode_polyline(encoded: &str, precision: u32) -> Vec<(f64, f64)> {
     while let (Some(dlat), Some(dlon)) = (next_delta(), next_delta()) {
         lat += dlat;
         lon += dlon;
-        points.push((lat as f64 / factor, lon as f64 / factor));
+        points.push(LatLon::new(lat as f64 / factor, lon as f64 / factor));
     }
     points
 }
@@ -529,8 +527,10 @@ mod tests {
         let expected = [(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)];
 
         assert_eq!(points.len(), expected.len());
-        for ((lat, lon), (expected_lat, expected_lon)) in points.into_iter().zip(expected) {
-            assert!((lat - expected_lat).abs() < 1e-9 && (lon - expected_lon).abs() < 1e-9);
+        for (point, (expected_lat, expected_lon)) in points.into_iter().zip(expected) {
+            assert!(
+                (point.lat - expected_lat).abs() < 1e-9 && (point.lon - expected_lon).abs() < 1e-9
+            );
         }
     }
 
@@ -609,7 +609,10 @@ mod tests {
         assert_eq!(line.headsign.as_deref(), Some("Château de Vincennes"));
         assert_eq!(metro.stops.len(), 1);
         assert_eq!(metro.stops[0].name, "Châtelet");
-        assert_eq!(metro.stops[0].position, world_position(48.858, 2.347));
+        assert_eq!(
+            metro.stops[0].position,
+            LatLon::new(48.858, 2.347).to_world()
+        );
         assert_eq!(
             metro.stops[0].arrival,
             Some("2026-10-25T15:02:00Z".parse::<Timestamp>().unwrap())
@@ -785,8 +788,8 @@ mod tests {
 
     #[test]
     fn queries_follow_the_mode() {
-        let louvre = (48.8606, 2.3376);
-        let gare_de_lyon = (48.8443, 2.3744);
+        let louvre = LatLon::new(48.8606, 2.3376);
+        let gare_de_lyon = LatLon::new(48.8443, 2.3744);
         let param = |mode, key| {
             query(louvre, gare_de_lyon, mode, None)
                 .into_iter()

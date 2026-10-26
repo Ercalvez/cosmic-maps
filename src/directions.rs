@@ -10,8 +10,8 @@ use cosmic::prelude::*;
 use cosmic::widget::{self, icon, segmented_button};
 
 use crate::fl;
+use crate::geo::LatLon;
 use crate::map::RouteOverlay;
-use crate::map::camera::lat_lon;
 use crate::map::location::Position;
 use crate::map::poi::Poi;
 use crate::route_view::{self, Ends, RouteChoice};
@@ -106,11 +106,11 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
-    fn lat_lon(&self) -> Option<(f64, f64)> {
+    fn lat_lon(&self) -> Option<LatLon> {
         match self {
             Self::Unset => None,
-            Self::UserLocation(position) => Some((position.latitude, position.longitude)),
-            Self::Place(poi) => Some(lat_lon(poi.position)),
+            Self::UserLocation(position) => Some(position.lat_lon),
+            Self::Place(poi) => Some(poi.position.to_lat_lon()),
         }
     }
 }
@@ -129,8 +129,8 @@ pub enum RouteState {
 /// The trip a route request is for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RouteQuery {
-    from: (f64, f64),
-    to: (f64, f64),
+    from: LatLon,
+    to: LatLon,
     mode: RouteMode,
 }
 
@@ -139,8 +139,8 @@ struct RouteQuery {
 #[derive(Debug, Clone)]
 pub struct RouteRequest {
     pub id: u64,
-    pub from: (f64, f64),
-    pub to: (f64, f64),
+    pub from: LatLon,
+    pub to: LatLon,
     pub mode: RouteMode,
     /// Earlier or later options, as a cursor from a previous plan.
     pub page: Option<String>,
@@ -578,6 +578,7 @@ fn field(field: Field, label: String, hint: String, search: &SearchBox) -> Eleme
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geo::WorldPoint;
     use crate::services::photon::SearchResult;
 
     fn place(name: &str) -> Poi {
@@ -588,15 +589,14 @@ mod tests {
             subclass: None,
             rank: 0,
             osm_id: None,
-            position: (0.5, 0.5),
+            position: WorldPoint::new(0.5, 0.5),
         }
     }
 
     /// Near the Musée du Louvre, Paris.
     fn here() -> Position {
         Position {
-            latitude: 48.8606,
-            longitude: 2.3376,
+            lat_lon: LatLon::new(48.8606, 2.3376),
             accuracy: 50.0,
         }
     }

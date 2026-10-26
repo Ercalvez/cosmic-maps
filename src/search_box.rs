@@ -219,6 +219,7 @@ impl SearchBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geo::WorldPoint;
     use crate::map::poi::Poi;
 
     fn result(name: &str) -> SearchResult {
@@ -230,7 +231,7 @@ mod tests {
                 subclass: None,
                 rank: 0,
                 osm_id: None,
-                position: (0.5, 0.5),
+                position: WorldPoint::new(0.5, 0.5),
             },
             area: None,
         }

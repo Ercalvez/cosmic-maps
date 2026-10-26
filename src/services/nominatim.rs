@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::http::{CLIENT, Error, RateLimit};
 use super::join;
-use crate::map::camera::world_position;
+use crate::geo::{LatLon, WorldPoint};
 use crate::map::poi::{OsmId, Poi, system_languages};
 
 const LOOKUP_URL: &str = "https://nominatim.openstreetmap.org/lookup";
@@ -42,9 +42,9 @@ pub struct PoiDetails {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Shape {
     /// Streets and rivers: one or more lines.
-    Lines(Vec<Vec<(f64, f64)>>),
+    Lines(Vec<Vec<WorldPoint>>),
     /// Buildings and areas: the rings of one or more polygons, holes included.
-    Area(Vec<Vec<(f64, f64)>>),
+    Area(Vec<Vec<WorldPoint>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,10 +89,10 @@ pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
 /// What is at a latitude and longitude, with its details, or `None` if nothing is.
 /// `zoom` sets how detailed the answer is, from 3 (a country) to 18 (a building),
 /// close to map zoom levels.
-pub async fn reverse(lat: f64, lon: f64, zoom: u8) -> Result<Option<(Poi, PoiDetails)>, Error> {
+pub async fn reverse(at: LatLon, zoom: u8) -> Result<Option<(Poi, PoiDetails)>, Error> {
     NOMINATIM.wait_turn().await;
 
-    let (lat, lon, zoom) = (lat.to_string(), lon.to_string(), zoom.to_string());
+    let (lat, lon, zoom) = (at.lat.to_string(), at.lon.to_string(), zoom.to_string());
     let response: ReverseResponse = CLIENT
         .get(REVERSE_URL)
         .query(&[
@@ -170,9 +170,9 @@ enum KnownGeometry {
 
 impl Geometry {
     fn into_shape(self) -> Option<Shape> {
-        let to_world = |line: Vec<[f64; 2]>| -> Vec<(f64, f64)> {
+        let to_world = |line: Vec<[f64; 2]>| -> Vec<WorldPoint> {
             line.into_iter()
-                .map(|[lon, lat]| world_position(lat, lon))
+                .map(|[lon, lat]| LatLon::new(lat, lon).to_world())
                 .collect()
         };
 
@@ -216,7 +216,7 @@ impl Place {
                 (Some("relation"), Some(id)) => Some(OsmId::Relation(id)),
                 _ => None,
             },
-            position: world_position(lat, lon),
+            position: LatLon::new(lat, lon).to_world(),
         };
         Some((poi, PoiDetails::from(self)))
     }
@@ -389,8 +389,8 @@ mod tests {
             panic!("expected an area");
         };
         assert_eq!(rings.len(), 1);
-        assert_eq!(rings[0][0], (0.5, 0.5));
-        assert_eq!(rings[0][1], (0.75, 0.5));
+        assert_eq!(rings[0][0], WorldPoint::new(0.5, 0.5));
+        assert_eq!(rings[0][1], WorldPoint::new(0.75, 0.5));
 
         assert!(matches!(
             shape(r#"{"type": "LineString", "coordinates": [[13.41, 52.52], [13.42, 52.52]]}"#),

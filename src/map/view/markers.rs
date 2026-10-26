@@ -8,7 +8,7 @@ use cosmic::iced::{Color, Rectangle, Size, mouse};
 
 use super::MapView;
 use super::routes::{draw_route_stops, draw_routes};
-use crate::map::camera::{Camera, world_position};
+use crate::map::camera::Camera;
 use crate::map::style::MapPalette;
 use crate::services::nominatim::Shape;
 
@@ -60,8 +60,9 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             let center = self
                 .map
                 .camera
-                .to_screen(world_position(user.latitude, user.longitude), bounds.size());
-            let radius = (user.accuracy / self.map.camera.meters_per_pixel(user.latitude)) as f32;
+                .to_screen(user.lat_lon.to_world(), bounds.size());
+            let radius =
+                (user.accuracy / self.map.camera.meters_per_pixel(user.lat_lon.lat)) as f32;
             (center, radius)
         });
         if let Some((center, radius)) = user {
