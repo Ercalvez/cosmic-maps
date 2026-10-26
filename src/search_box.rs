@@ -70,11 +70,13 @@ pub struct SearchBox {
 impl SearchBox {
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
-            Message::Input(text) => self.on_input(text).map(|query| Action::Query(Query::Later(query))),
+            Message::Input(text) => self
+                .on_input(text)
+                .map(|query| Action::Query(Query::Later(query))),
             // Typing continued: a later message will search.
-            Message::Debounced(query) => {
-                self.is_current(&query).then_some(Action::Query(Query::Now(query)))
-            }
+            Message::Debounced(query) => self
+                .is_current(&query)
+                .then_some(Action::Query(Query::Now(query))),
             Message::Submit => match self.submit() {
                 Submit::Pick(index) => self.take(index).map(Action::Pick),
                 Submit::Search(query) => Some(Action::Query(Query::Now(query))),
@@ -288,8 +290,14 @@ mod tests {
         assert_eq!(later, Some(Query::Later("Châtelet".to_owned())));
         search.update(Message::Input("Châtelet-Les Halles".to_owned()));
 
-        assert_eq!(update(&mut search, Message::Debounced("Châtelet".to_owned())), None);
-        let now = update(&mut search, Message::Debounced("Châtelet-Les Halles".to_owned()));
+        assert_eq!(
+            update(&mut search, Message::Debounced("Châtelet".to_owned())),
+            None
+        );
+        let now = update(
+            &mut search,
+            Message::Debounced("Châtelet-Les Halles".to_owned()),
+        );
         assert_eq!(now, Some(Query::Now("Châtelet-Les Halles".to_owned())));
     }
 
@@ -298,7 +306,10 @@ mod tests {
         let mut search = SearchBox::default();
         search.update(Message::Input("Châtelet".to_owned()));
         search.update(Message::Submit);
-        let picked = search.update(Message::Results("Châtelet".to_owned(), Ok(vec![result("Châtelet")])));
+        let picked = search.update(Message::Results(
+            "Châtelet".to_owned(),
+            Ok(vec![result("Châtelet")]),
+        ));
         assert!(matches!(picked, Some(Action::Pick(result)) if result.poi.name == "Châtelet"));
         // The text stays, without the results.
         assert_eq!(search.input, "Châtelet");

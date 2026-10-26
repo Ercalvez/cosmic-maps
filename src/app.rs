@@ -8,16 +8,16 @@ use crate::directions::{self, Directions, RouteRequest};
 use crate::fl;
 use crate::key_bind;
 use crate::map::location::{self, Position};
-use crate::map::style::MapPalette;
 use crate::map::poi::{OsmId, Poi};
+use crate::map::style::MapPalette;
 use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
 use crate::route_view;
+use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
+use crate::services;
 use crate::services::nominatim::{self, PoiDetails};
 use crate::services::photon;
 use crate::services::transitous;
-use crate::services;
-use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config;
 use cosmic::iced::futures::StreamExt;
@@ -386,7 +386,8 @@ impl cosmic::Application for AppModel {
 
             Message::Key(modifiers, key, physical_key) => {
                 let pressed = (modifiers, &key, Some(&physical_key));
-                if let Some(action) = key_bind::action(&self.key_binds, &self.key_aliases, pressed) {
+                if let Some(action) = key_bind::action(&self.key_binds, &self.key_aliases, pressed)
+                {
                     return self.update(menu::action::MenuAction::message(&action));
                 }
             }
@@ -487,7 +488,10 @@ impl AppModel {
     }
 
     /// Carries out work the directions asked for.
-    fn run_directions(&mut self, actions: Vec<directions::Action>) -> Task<cosmic::Action<Message>> {
+    fn run_directions(
+        &mut self,
+        actions: Vec<directions::Action>,
+    ) -> Task<cosmic::Action<Message>> {
         let mut tasks = Vec::with_capacity(actions.len());
         for action in actions {
             match action {
@@ -516,7 +520,8 @@ impl AppModel {
 
     fn find_route(request: RouteRequest) -> Task<cosmic::Action<Message>> {
         cosmic::task::future(async move {
-            let result = transitous::plan(request.from, request.to, request.mode, request.page).await;
+            let result =
+                transitous::plan(request.from, request.to, request.mode, request.page).await;
             Message::Directions(directions::Message::RouteFound(request.id, result))
         })
     }
@@ -633,8 +638,14 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
-            MenuAction::ZoomIn => Message::Map(MapEvent::Zoom { delta: 1.0, anchor: None }),
-            MenuAction::ZoomOut => Message::Map(MapEvent::Zoom { delta: -1.0, anchor: None }),
+            MenuAction::ZoomIn => Message::Map(MapEvent::Zoom {
+                delta: 1.0,
+                anchor: None,
+            }),
+            MenuAction::ZoomOut => Message::Map(MapEvent::Zoom {
+                delta: -1.0,
+                anchor: None,
+            }),
             MenuAction::Locate => Message::Map(MapEvent::Locate),
             MenuAction::Pan(arrow) => Message::Arrow(*arrow),
         }

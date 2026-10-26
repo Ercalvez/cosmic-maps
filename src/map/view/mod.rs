@@ -17,10 +17,13 @@ use cosmic::widget::{self, icon};
 
 use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, lat_lon, world_position, zoom_showing};
 use super::location::Position;
-use crate::services::{self, nominatim::{PoiDetails, Shape}};
 use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
 use super::style::MapPalette;
+use crate::services::{
+    self,
+    nominatim::{PoiDetails, Shape},
+};
 use canvas::MapCanvas;
 use markers::MarkerCanvas;
 pub use routes::RouteOverlay;
@@ -54,9 +57,15 @@ const MAX_FALLBACK_LEVELS: u8 = 6;
 #[derive(Debug, Clone)]
 pub enum MapEvent {
     /// Move the map content by this many screen pixels.
-    Pan { dx: f64, dy: f64 },
+    Pan {
+        dx: f64,
+        dy: f64,
+    },
     /// Zoom by `delta` levels around `anchor`, or around the center if `None`.
-    Zoom { delta: f64, anchor: Option<Point> },
+    Zoom {
+        delta: f64,
+        anchor: Option<Point>,
+    },
     Resized(Size),
     /// A click without dragging, at this position in the map.
     Click(Point),
@@ -190,7 +199,10 @@ impl MapView {
             }
             MapEvent::Zoom { delta, anchor } => {
                 self.following_user = false;
-                let anchor = anchor.unwrap_or(Point::new(self.viewport.width / 2.0, self.viewport.height / 2.0));
+                let anchor = anchor.unwrap_or(Point::new(
+                    self.viewport.width / 2.0,
+                    self.viewport.height / 2.0,
+                ));
                 self.camera.zoom_at(delta, anchor, self.viewport);
             }
             MapEvent::Resized(size) => {
@@ -350,7 +362,11 @@ impl MapView {
 
         closest_poi(self.drawn_pois(self.viewport), point, POI_HIT_RADIUS)
             .or_else(|| {
-                closest_poi(self.pois_in_view(self.viewport, u32::MAX), point, HIDDEN_POI_HIT_RADIUS)
+                closest_poi(
+                    self.pois_in_view(self.viewport, u32::MAX),
+                    point,
+                    HIDDEN_POI_HIT_RADIUS,
+                )
             })
             .cloned()
     }
@@ -399,7 +415,11 @@ impl MapView {
             .visible_tiles(self.viewport)
             .into_iter()
             .map(|tile| tile.id)
-            .filter(|id| self.tiles.get(id).is_none_or(|cached| cached.is_stale(&self.palette)))
+            .filter(|id| {
+                self.tiles
+                    .get(id)
+                    .is_none_or(|cached| cached.is_stale(&self.palette))
+            })
             .collect();
 
         if missing != self.wanted {
@@ -423,7 +443,12 @@ impl MapView {
         Message: Clone + 'static,
     {
         let spacing = cosmic::theme::spacing();
-        let zoom = |delta| on_event(MapEvent::Zoom { delta, anchor: None });
+        let zoom = |delta| {
+            on_event(MapEvent::Zoom {
+                delta,
+                anchor: None,
+            })
+        };
 
         let zoom_in = widget::button::icon(icon::from_name("zoom-in-symbolic"))
             .on_press_maybe((self.camera.zoom() < MAX_ZOOM).then(|| zoom(ZOOM_PER_CLICK)));

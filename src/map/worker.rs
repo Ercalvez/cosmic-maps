@@ -31,8 +31,8 @@ use maplibre::{
 
 use super::camera::TileId;
 use super::poi::{Poi, parse_pois, system_languages};
-use super::style::MapPalette;
 use super::state::{MapCommand, RenderedTile};
+use super::style::MapPalette;
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
 
@@ -101,7 +101,12 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>, mut pa
     }
 }
 
-fn apply(command: MapCommand, queue: &mut Vec<TileId>, palette: &mut MapPalette, style: &mut Style) {
+fn apply(
+    command: MapCommand,
+    queue: &mut Vec<TileId>,
+    palette: &mut MapPalette,
+    style: &mut Style,
+) {
     match command {
         MapCommand::Want(tiles) => *queue = tiles,
         MapCommand::SetPalette(new_palette) => {

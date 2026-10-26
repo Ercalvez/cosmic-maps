@@ -37,7 +37,6 @@ pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
     loader
 });
 
-
 /// Looks up a message whose ID is only known at runtime, which `fl!()` cannot do.
 pub fn get_dynamic(message_id: &str) -> Option<String> {
     LANGUAGE_LOADER
@@ -58,4 +57,3 @@ macro_rules! fl {
         i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id, $($args)*)
     }};
 }
-

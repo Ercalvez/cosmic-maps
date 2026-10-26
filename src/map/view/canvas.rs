@@ -123,7 +123,12 @@ where
         for tile in self.map.camera.visible_tiles(bounds.size()) {
             let rect = Rectangle::new(tile.position, Size::new(tile.size, tile.size));
 
-            if let Some(handle) = self.map.tiles.get(&tile.id).and_then(|cached| cached.image.as_ref()) {
+            if let Some(handle) = self
+                .map
+                .tiles
+                .get(&tile.id)
+                .and_then(|cached| cached.image.as_ref())
+            {
                 frame.draw_image(rect, handle);
             } else if let Some((ancestor, handle)) = self.map.loaded_ancestor(tile.id) {
                 // `with_clip` replaces the frame's clip instead of narrowing it, so keep

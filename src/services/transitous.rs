@@ -7,7 +7,6 @@
 //! `User-Agent` with a contact, with visible attribution of transitous.org/sources
 //! and OpenStreetMap. Maintainers ask to be contacted before heavy `/plan` use.
 
-
 use std::time::Duration;
 
 use cosmic::iced::Color;
@@ -16,7 +15,6 @@ use serde::Deserialize;
 
 use super::http::{CLIENT, Error, RateLimit};
 use crate::map::camera::world_position;
-
 
 const PLAN_URL: &str = "https://api.transitous.org/api/v6/plan";
 /// Transitous gives no numbers; plans are only requested on user actions, so one
@@ -103,11 +101,17 @@ pub struct Itinerary {
 
 impl Itinerary {
     pub fn start(&self) -> Planned {
-        Planned { estimated: self.start_time, scheduled: self.scheduled_start }
+        Planned {
+            estimated: self.start_time,
+            scheduled: self.scheduled_start,
+        }
     }
 
     pub fn end(&self) -> Planned {
-        Planned { estimated: self.end_time, scheduled: self.scheduled_end }
+        Planned {
+            estimated: self.end_time,
+            scheduled: self.scheduled_end,
+        }
     }
 
     /// The duration as estimated and as scheduled, in seconds.
@@ -147,11 +151,17 @@ impl Leg {
     }
 
     pub fn start(&self) -> Planned {
-        Planned { estimated: self.start_time, scheduled: self.scheduled_start }
+        Planned {
+            estimated: self.start_time,
+            scheduled: self.scheduled_start,
+        }
     }
 
     pub fn end(&self) -> Planned {
-        Planned { estimated: self.end_time, scheduled: self.scheduled_end }
+        Planned {
+            estimated: self.end_time,
+            scheduled: self.scheduled_end,
+        }
     }
 
     /// On a public transit line, rather than walking, cycling or driving.
@@ -230,7 +240,11 @@ fn query(
     page: Option<String>,
 ) -> Vec<(&'static str, String)> {
     // Without transit modes, only the route all the way by street is computed.
-    let transit_modes = if mode == RouteMode::Transit { "TRANSIT" } else { "" };
+    let transit_modes = if mode == RouteMode::Transit {
+        "TRANSIT"
+    } else {
+        ""
+    };
     let mut query = vec![
         ("fromPlace", format!("{},{}", from.0, from.1)),
         ("toPlace", format!("{},{}", to.0, to.1)),
@@ -335,7 +349,11 @@ struct RawStep {
 impl Response {
     fn into_plan(self) -> Plan {
         Plan {
-            direct: self.direct.into_iter().next().map(RawItinerary::into_itinerary),
+            direct: self
+                .direct
+                .into_iter()
+                .next()
+                .map(RawItinerary::into_itinerary),
             transit: self
                 .itineraries
                 .into_iter()
@@ -350,7 +368,9 @@ impl Response {
 impl RawItinerary {
     fn into_itinerary(self) -> Itinerary {
         let legs: Vec<Leg> = self.legs.into_iter().map(RawLeg::into_leg).collect();
-        let scheduled_start = legs.first().map_or(self.start_time, |leg| leg.scheduled_start);
+        let scheduled_start = legs
+            .first()
+            .map_or(self.start_time, |leg| leg.scheduled_start);
         let scheduled_end = legs.last().map_or(self.end_time, |leg| leg.scheduled_end);
 
         let mut itinerary = Itinerary {
@@ -375,7 +395,9 @@ impl Itinerary {
         let too_early = |planned: Planned| {
             planned.scheduled.as_second() - planned.estimated.as_second() > MAX_EARLY
         };
-        self.legs.iter().any(|leg| too_early(leg.start()) || too_early(leg.end()))
+        self.legs
+            .iter()
+            .any(|leg| too_early(leg.start()) || too_early(leg.end()))
     }
 
     /// Drops all the real-time estimates, so the times shown stay consistent.
@@ -458,9 +480,8 @@ impl RawPlace {
 /// A colour written as `rrggbb`, as in GTFS feeds.
 fn hex_color(hex: &str) -> Option<Color> {
     let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).ok()?;
-    (hex.trim_start_matches('#').len() == 6).then(|| {
-        Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8)
-    })
+    (hex.trim_start_matches('#').len() == 6)
+        .then(|| Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8))
 }
 
 /// Decodes an encoded polyline (Google's format) into latitudes and longitudes.
@@ -480,7 +501,11 @@ fn decode_polyline(encoded: &str, precision: u32) -> Vec<(f64, f64)> {
             }
         }
         // Zigzag encoding: the lowest bit is the sign.
-        Some(if result & 1 == 1 { !(result >> 1) } else { result >> 1 })
+        Some(if result & 1 == 1 {
+            !(result >> 1)
+        } else {
+            result >> 1
+        })
     };
 
     let mut points = Vec::new();
@@ -511,7 +536,10 @@ mod tests {
 
     #[test]
     fn parses_hex_colors() {
-        assert_eq!(hex_color("ffbe00"), Some(Color::from_rgb8(0xff, 0xbe, 0x00)));
+        assert_eq!(
+            hex_color("ffbe00"),
+            Some(Color::from_rgb8(0xff, 0xbe, 0x00))
+        );
         assert_eq!(hex_color("#ffffff"), Some(Color::WHITE));
         assert_eq!(hex_color("fff"), None);
         assert_eq!(hex_color("not a colour"), None);
@@ -560,7 +588,10 @@ mod tests {
 
         let walk = plan.direct.unwrap();
         assert_eq!(walk.duration, 1159);
-        assert_eq!(walk.start_time, "2026-10-25T14:56:00Z".parse::<Timestamp>().unwrap());
+        assert_eq!(
+            walk.start_time,
+            "2026-10-25T14:56:00Z".parse::<Timestamp>().unwrap()
+        );
         let leg = &walk.legs[0];
         assert!(leg.is_walk());
         assert_eq!(leg.distance, Some(1358.0));
@@ -592,7 +623,9 @@ mod tests {
     fn metro_trip(late: i64) -> Itinerary {
         let time = |seconds: i64| {
             let scheduled: Timestamp = "2026-10-25T15:01:00Z".parse().unwrap();
-            Timestamp::from_second(scheduled.as_second() + seconds).unwrap().to_string()
+            Timestamp::from_second(scheduled.as_second() + seconds)
+                .unwrap()
+                .to_string()
         };
         let json = format!(
             r#"{{
@@ -627,7 +660,9 @@ mod tests {
             end = time(late + 120),
             stop = time(late + 60),
         );
-        serde_json::from_str::<RawItinerary>(&json).unwrap().into_itinerary()
+        serde_json::from_str::<RawItinerary>(&json)
+            .unwrap()
+            .into_itinerary()
     }
 
     fn parse(time: &str) -> Timestamp {
@@ -650,7 +685,10 @@ mod tests {
         assert_eq!(metro.start().estimated, parse("2026-10-25T15:05:00Z"));
         assert_eq!(metro.start().scheduled, parse("2026-10-25T15:01:00Z"));
         assert_eq!(metro.stops[0].arrival, Some(parse("2026-10-25T15:06:00Z")));
-        assert_eq!(metro.stops[0].scheduled_arrival, Some(parse("2026-10-25T15:02:00Z")));
+        assert_eq!(
+            metro.stops[0].scheduled_arrival,
+            Some(parse("2026-10-25T15:02:00Z"))
+        );
     }
 
     #[test]
@@ -675,10 +713,16 @@ mod tests {
     #[test]
     fn early_estimates_are_kept_within_five_minutes_and_late_ones_always() {
         // Three minutes early.
-        assert_eq!(metro_trip(-180).legs[1].start().estimated, parse("2026-10-25T14:58:00Z"));
+        assert_eq!(
+            metro_trip(-180).legs[1].start().estimated,
+            parse("2026-10-25T14:58:00Z")
+        );
         // Half an hour late.
         let late = metro_trip(1800);
-        assert_eq!(late.legs[1].start().estimated, parse("2026-10-25T15:31:00Z"));
+        assert_eq!(
+            late.legs[1].start().estimated,
+            parse("2026-10-25T15:31:00Z")
+        );
         assert_eq!(late.durations(), (2220, 420));
     }
 
@@ -694,7 +738,10 @@ mod tests {
             assert_eq!(leg.start_time, leg.scheduled_start);
             assert_eq!(leg.end_time, leg.scheduled_end);
         }
-        assert_eq!(trip.legs[1].stops[0].arrival, Some(parse("2026-10-25T15:02:00Z")));
+        assert_eq!(
+            trip.legs[1].stops[0].arrival,
+            Some(parse("2026-10-25T15:02:00Z"))
+        );
     }
 
     #[test]
@@ -747,18 +794,44 @@ mod tests {
                 .map(|(_, value)| value)
         };
 
-        assert_eq!(param(RouteMode::Walk, "directModes").as_deref(), Some("WALK"));
+        assert_eq!(
+            param(RouteMode::Walk, "directModes").as_deref(),
+            Some("WALK")
+        );
         assert_eq!(param(RouteMode::Walk, "transitModes").as_deref(), Some(""));
-        assert_eq!(param(RouteMode::Transit, "directModes").as_deref(), Some("WALK"));
-        assert_eq!(param(RouteMode::Transit, "transitModes").as_deref(), Some("TRANSIT"));
-        assert_eq!(param(RouteMode::Bike, "directModes").as_deref(), Some("BIKE"));
-        assert_eq!(param(RouteMode::Bike, "elevationCosts").as_deref(), Some("LOW"));
+        assert_eq!(
+            param(RouteMode::Transit, "directModes").as_deref(),
+            Some("WALK")
+        );
+        assert_eq!(
+            param(RouteMode::Transit, "transitModes").as_deref(),
+            Some("TRANSIT")
+        );
+        assert_eq!(
+            param(RouteMode::Bike, "directModes").as_deref(),
+            Some("BIKE")
+        );
+        assert_eq!(
+            param(RouteMode::Bike, "elevationCosts").as_deref(),
+            Some("LOW")
+        );
         assert_eq!(param(RouteMode::Car, "directModes").as_deref(), Some("CAR"));
         assert_eq!(param(RouteMode::Car, "elevationCosts"), None);
-        assert_eq!(param(RouteMode::Car, "maxDirectTime").as_deref(), Some("43200"));
-        assert_eq!(param(RouteMode::Walk, "fromPlace").as_deref(), Some("48.8606,2.3376"));
+        assert_eq!(
+            param(RouteMode::Car, "maxDirectTime").as_deref(),
+            Some("43200")
+        );
+        assert_eq!(
+            param(RouteMode::Walk, "fromPlace").as_deref(),
+            Some("48.8606,2.3376")
+        );
 
-        let page = query(louvre, gare_de_lyon, RouteMode::Transit, Some("LATER|1".to_owned()));
+        let page = query(
+            louvre,
+            gare_de_lyon,
+            RouteMode::Transit,
+            Some("LATER|1".to_owned()),
+        );
         assert!(page.contains(&("pageCursor", "LATER|1".to_owned())));
     }
 }

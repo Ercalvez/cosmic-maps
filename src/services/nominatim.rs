@@ -369,7 +369,10 @@ mod tests {
         assert_eq!(poi.name, "10 Rue de Rivoli");
         assert_eq!(poi.osm_id, Some(OsmId::Node(703432291)));
         assert_eq!(poi.subclass.as_deref(), Some("house"));
-        assert_eq!(details.address.as_deref(), Some("10 Rue de Rivoli, 75004 Paris"));
+        assert_eq!(
+            details.address.as_deref(),
+            Some("10 Rue de Rivoli, 75004 Paris")
+        );
     }
 
     #[test]
@@ -394,8 +397,14 @@ mod tests {
             Some(Shape::Lines(lines)) if lines.len() == 1
         ));
         // Points have no extent, and an unknown geometry does not break parsing.
-        assert_eq!(shape(r#"{"type": "Point", "coordinates": [13.41, 52.52]}"#), None);
-        assert_eq!(shape(r#"{"type": "GeometryCollection", "geometries": []}"#), None);
+        assert_eq!(
+            shape(r#"{"type": "Point", "coordinates": [13.41, 52.52]}"#),
+            None
+        );
+        assert_eq!(
+            shape(r#"{"type": "GeometryCollection", "geometries": []}"#),
+            None
+        );
     }
 
     #[test]

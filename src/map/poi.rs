@@ -36,7 +36,8 @@ impl Poi {
         // `subclass` first: `class` can be misleading, such as `art_gallery` for
         // street artwork.
         // `yes` says nothing, as in `building=yes`.
-        let values = [self.subclass.as_deref(), self.class.as_deref()].map(|value| value.filter(|v| *v != "yes"));
+        let values = [self.subclass.as_deref(), self.class.as_deref()]
+            .map(|value| value.filter(|v| *v != "yes"));
 
         values
             .iter()

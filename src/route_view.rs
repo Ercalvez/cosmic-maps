@@ -49,7 +49,10 @@ pub fn plan_view<'a>(
         let Some(direct) = &plan.direct else {
             return widget::column::with_capacity(0).into();
         };
-        let summary = [format_duration(direct.duration), format_distance(street_distance(direct))];
+        let summary = [
+            format_duration(direct.duration),
+            format_distance(street_distance(direct)),
+        ];
         return widget::column::with_capacity(2)
             .push(widget::text::heading(summary.join(" · ")))
             .push_maybe(steps_view(direct))
@@ -116,8 +119,13 @@ fn option<'a>(
 /// "Walk only · 20 min", then the distance.
 fn walk_option<'a>(walk: &Itinerary) -> Element<'a, Message> {
     widget::column::with_capacity(2)
-        .push(heading_row(fl!("route-walk-only"), format_duration(walk.duration)))
-        .push(widget::text::caption(format_distance(street_distance(walk))))
+        .push(heading_row(
+            fl!("route-walk-only"),
+            format_duration(walk.duration),
+        ))
+        .push(widget::text::caption(format_distance(street_distance(
+            walk,
+        ))))
         .spacing(2)
         .into()
 }
@@ -137,7 +145,12 @@ fn transit_option<'a>(itinerary: &'a Itinerary) -> Element<'a, Message> {
     let mut lines = widget::row::with_capacity(2 * itinerary.legs.len())
         .spacing(cosmic::theme::spacing().space_xxs)
         .align_y(Alignment::Center);
-    for (index, leg) in itinerary.legs.iter().filter(|leg| leg.is_transit()).enumerate() {
+    for (index, leg) in itinerary
+        .legs
+        .iter()
+        .filter(|leg| leg.is_transit())
+        .enumerate()
+    {
         if index > 0 {
             lines = lines.push(widget::text::caption("›"));
         }
@@ -145,7 +158,10 @@ fn transit_option<'a>(itinerary: &'a Itinerary) -> Element<'a, Message> {
     }
     let lines = lines
         .push(widget::space::horizontal())
-        .push(widget::text::caption(fl!("route-transfers", count = itinerary.transfers)));
+        .push(widget::text::caption(fl!(
+            "route-transfers",
+            count = itinerary.transfers
+        )));
 
     widget::column::with_capacity(2)
         .push(heading)
@@ -180,7 +196,12 @@ fn legs_view<'a>(
 
     widget::column::with_children(legs)
         .spacing(spacing.space_s)
-        .padding([spacing.space_xxs, spacing.space_s, spacing.space_xs, spacing.space_m])
+        .padding([
+            spacing.space_xxs,
+            spacing.space_s,
+            spacing.space_xs,
+            spacing.space_m,
+        ])
         .into()
 }
 
@@ -208,9 +229,10 @@ fn leg_view<'a>(
     let headsign = leg.line.as_ref().and_then(|line| line.headsign.clone());
     let line = widget::row::with_capacity(2)
         .push(badge(leg))
-        .push_maybe(headsign.map(|headsign| {
-            widget::text::body(fl!("route-leg-towards", headsign = headsign))
-        }))
+        .push_maybe(
+            headsign
+                .map(|headsign| widget::text::body(fl!("route-leg-towards", headsign = headsign))),
+        )
         .spacing(cosmic::theme::spacing().space_xs)
         .align_y(Alignment::Center);
 
@@ -315,11 +337,17 @@ fn versus_schedule<'a>(
     let mut spans = vec![span::<(), _>(estimated).font(font).color_maybe(color)];
     if deviation != Deviation::Same {
         spans.push(span("  ").font(font));
-        spans.push(span(scheduled).font(cosmic::font::default()).strikethrough(true));
+        spans.push(
+            span(scheduled)
+                .font(cosmic::font::default())
+                .strikethrough(true),
+        );
     }
     rich_text(spans)
         .size(size)
-        .line_height(cosmic::iced::widget::text::LineHeight::Absolute(line_height.into()))
+        .line_height(cosmic::iced::widget::text::LineHeight::Absolute(
+            line_height.into(),
+        ))
         .into()
 }
 
@@ -330,7 +358,11 @@ fn stops_view<'a>(leg: &'a Leg, index: usize, open: bool) -> Element<'a, Message
         return count.into();
     }
 
-    let chevron = if open { "go-down-symbolic" } else { "go-next-symbolic" };
+    let chevron = if open {
+        "go-down-symbolic"
+    } else {
+        "go-next-symbolic"
+    };
     let toggle = widget::button::custom(
         widget::row::with_capacity(2)
             .push(icon::from_name(chevron).size(12).icon())
@@ -354,9 +386,12 @@ fn stops_view<'a>(leg: &'a Leg, index: usize, open: bool) -> Element<'a, Message
                 widget::text::caption(line).into()
             })
             .collect();
-        widget::column::with_children(rows)
-            .spacing(2)
-            .padding([2, 0, 2, cosmic::theme::spacing().space_m])
+        widget::column::with_children(rows).spacing(2).padding([
+            2,
+            0,
+            2,
+            cosmic::theme::spacing().space_m,
+        ])
     });
 
     widget::column::with_capacity(2)
@@ -377,14 +412,16 @@ fn badge<'a>(leg: &Leg) -> Element<'a, Message> {
     let content = widget::container(widget::text::caption_heading(line_label(leg))).padding([1, 6]);
     match background {
         Some(background) => content
-            .class(cosmic::theme::Container::custom(move |_| widget::container::Style {
-                background: Some(Background::Color(background)),
-                text_color: text,
-                border: Border {
-                    radius: 4.0.into(),
-                    ..Border::default()
-                },
-                ..widget::container::Style::default()
+            .class(cosmic::theme::Container::custom(move |_| {
+                widget::container::Style {
+                    background: Some(Background::Color(background)),
+                    text_color: text,
+                    border: Border {
+                        radius: 4.0.into(),
+                        ..Border::default()
+                    },
+                    ..widget::container::Style::default()
+                }
             }))
             .into(),
         None => content.class(cosmic::theme::Container::Card).into(),
@@ -394,7 +431,11 @@ fn badge<'a>(leg: &Leg) -> Element<'a, Message> {
 /// Black or white, whichever reads better on `background`.
 fn contrasting(background: Color) -> Color {
     let luminance = 0.299 * background.r + 0.587 * background.g + 0.114 * background.b;
-    if luminance > 0.6 { Color::BLACK } else { Color::WHITE }
+    if luminance > 0.6 {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    }
 }
 
 /// "Metro 1", or the line name alone when its kind is unusual.
@@ -510,7 +551,9 @@ fn transit_kind(mode: &str) -> Option<String> {
 
 /// Local time, such as "15:01".
 fn format_time(time: Timestamp) -> String {
-    time.to_zoned(TimeZone::system()).strftime("%H:%M").to_string()
+    time.to_zoned(TimeZone::system())
+        .strftime("%H:%M")
+        .to_string()
 }
 
 /// "10 min", or "1 h 05" from an hour.
@@ -553,11 +596,20 @@ mod tests {
     #[test]
     fn durations_and_distances() {
         assert_eq!(format_duration(600), fl!("route-minutes", minutes = 10));
-        assert_eq!(format_duration(3900), fl!("route-hours", hours = 1, minutes = "05"));
+        assert_eq!(
+            format_duration(3900),
+            fl!("route-hours", hours = 1, minutes = "05")
+        );
         assert_eq!(format_distance(847.0), fl!("route-meters", meters = 850));
-        assert_eq!(format_distance(1358.0), fl!("route-kilometers", kilometers = "1.4"));
+        assert_eq!(
+            format_distance(1358.0),
+            fl!("route-kilometers", kilometers = "1.4")
+        );
         // Paris → Lyon by car.
-        assert_eq!(format_distance(465_696.0), fl!("route-kilometers", kilometers = "466"));
+        assert_eq!(
+            format_distance(465_696.0),
+            fl!("route-kilometers", kilometers = "466")
+        );
     }
 
     #[test]
@@ -606,7 +658,10 @@ mod tests {
             fl!("step-onto", action = left, street = "Rue du Renard")
         );
         // Unknown directions read as "continue".
-        assert_eq!(instruction(&step("SOMETHING_NEW", "", 10.0)), fl!("step-continue"));
+        assert_eq!(
+            instruction(&step("SOMETHING_NEW", "", 10.0)),
+            fl!("step-continue")
+        );
     }
 
     #[test]
@@ -623,7 +678,13 @@ mod tests {
     #[test]
     fn badge_text_contrasts() {
         // Metro 1's yellow takes black text, a dark blue white text.
-        assert_eq!(contrasting(Color::from_rgb8(0xff, 0xbe, 0x00)), Color::BLACK);
-        assert_eq!(contrasting(Color::from_rgb8(0x00, 0x30, 0x80)), Color::WHITE);
+        assert_eq!(
+            contrasting(Color::from_rgb8(0xff, 0xbe, 0x00)),
+            Color::BLACK
+        );
+        assert_eq!(
+            contrasting(Color::from_rgb8(0x00, 0x30, 0x80)),
+            Color::WHITE
+        );
     }
 }

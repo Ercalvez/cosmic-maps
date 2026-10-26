@@ -152,8 +152,8 @@ impl Camera {
         let first_x = (left / tile).floor() as i64;
         let last_x = ((left + f64::from(viewport.width)) / tile).floor() as i64;
         let first_y = ((top / tile).floor() as i64).max(0);
-        let last_y = (((top + f64::from(viewport.height)) / tile).floor() as i64)
-            .min(tiles_per_side - 1);
+        let last_y =
+            (((top + f64::from(viewport.height)) / tile).floor() as i64).min(tiles_per_side - 1);
 
         let mut tiles = Vec::new();
         for y in first_y..=last_y {
@@ -228,8 +228,14 @@ mod tests {
     #[test]
     fn fitting_shows_the_whole_box() {
         // Musée du Louvre to Gare de Lyon, Paris.
-        let (min, max) = (world_position(48.8606, 2.3376), world_position(48.8443, 2.3744));
-        let (min, max) = ((min.0.min(max.0), min.1.min(max.1)), (min.0.max(max.0), min.1.max(max.1)));
+        let (min, max) = (
+            world_position(48.8606, 2.3376),
+            world_position(48.8443, 2.3744),
+        );
+        let (min, max) = (
+            (min.0.min(max.0), min.1.min(max.1)),
+            (min.0.max(max.0), min.1.max(max.1)),
+        );
         let viewport = Size::new(800.0, 600.0);
         let camera = Camera::fitting(min, max, viewport, 40.0);
 

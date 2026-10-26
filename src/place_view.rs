@@ -7,9 +7,9 @@ use cosmic::widget::{self, icon};
 
 use crate::app::Message;
 use crate::fl;
-use crate::services::nominatim::{PoiDetails, Wheelchair};
 use crate::map::poi::Poi;
 use crate::map::view::{DetailsState, Place};
+use crate::services::nominatim::{PoiDetails, Wheelchair};
 
 /// The panel's content; the drawer provides the close button and the scrolling.
 pub fn view(place: Place<'_>) -> Element<'_, Message> {
@@ -34,8 +34,7 @@ fn selected_view<'a>(poi: &'a Poi, details: Option<&'a DetailsState>) -> Element
         .push_maybe(poi.category().map(widget::text::caption))
         .spacing(2);
 
-    let directions = widget::button::suggested(fl!("directions"))
-        .on_press(Message::OpenDirections);
+    let directions = widget::button::suggested(fl!("directions")).on_press(Message::OpenDirections);
 
     let details: Option<Element<'a, Message>> = match details {
         Some(DetailsState::Loading) => {
@@ -75,10 +74,16 @@ fn details_rows<'a>(details: &'a PoiDetails) -> Option<Element<'a, Message>> {
 
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
     if let Some(address) = &details.address {
-        rows.push(row("mark-location-symbolic", widget::text::body(address).into()));
+        rows.push(row(
+            "mark-location-symbolic",
+            widget::text::body(address).into(),
+        ));
     }
     if let Some(hours) = &details.opening_hours {
-        rows.push(row("document-open-recent-symbolic", widget::text::body(hours).into()));
+        rows.push(row(
+            "document-open-recent-symbolic",
+            widget::text::body(hours).into(),
+        ));
     }
     if let Some(website) = &details.website {
         rows.push(row("web-browser-symbolic", link(website, website.clone())));

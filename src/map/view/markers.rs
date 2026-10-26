@@ -9,8 +9,8 @@ use cosmic::iced::{Color, Rectangle, Size, mouse};
 use super::MapView;
 use super::routes::{draw_route_stops, draw_routes};
 use crate::map::camera::{Camera, world_position};
-use crate::services::nominatim::Shape;
 use crate::map::style::MapPalette;
+use crate::services::nominatim::Shape;
 
 const POI_MARKER_RADIUS: f32 = 3.5;
 const MARKER_RADIUS: f32 = 6.0;
@@ -44,7 +44,14 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
         }
 
         if let Some(routes) = &self.map.routes {
-            draw_routes(&mut frame, &self.map.camera, routes, bounds.size(), &self.map.palette, accent);
+            draw_routes(
+                &mut frame,
+                &self.map.camera,
+                routes,
+                bounds.size(),
+                &self.map.palette,
+                accent,
+            );
         }
 
         // The area the user is in, under the POI markers.
@@ -61,11 +68,20 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             let diagonal = bounds.width.hypot(bounds.height);
             if radius > USER_DOT_RADIUS && radius < 4.0 * diagonal {
                 let area = Path::circle(center, radius);
-                frame.fill(&area, Color { a: 0.15, ..USER_COLOR });
+                frame.fill(
+                    &area,
+                    Color {
+                        a: 0.15,
+                        ..USER_COLOR
+                    },
+                );
                 frame.stroke(
                     &area,
                     canvas::Stroke::default()
-                        .with_color(Color { a: 0.5, ..USER_COLOR })
+                        .with_color(Color {
+                            a: 0.5,
+                            ..USER_COLOR
+                        })
                         .with_width(1.0),
                 );
             }
@@ -79,11 +95,17 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
                     builder.circle(*position, POI_MARKER_RADIUS);
                 }
             });
-            let MapPalette { poi_marker, poi_outline, .. } = self.map.palette;
+            let MapPalette {
+                poi_marker,
+                poi_outline,
+                ..
+            } = self.map.palette;
             frame.fill(&markers, poi_marker);
             frame.stroke(
                 &markers,
-                canvas::Stroke::default().with_color(poi_outline).with_width(1.5),
+                canvas::Stroke::default()
+                    .with_color(poi_outline)
+                    .with_width(1.5),
             );
         }
 
@@ -94,7 +116,14 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             .as_ref()
             .and_then(|routes| routes.itineraries.get(routes.chosen))
         {
-            draw_route_stops(&mut frame, &self.map.camera, itinerary, bounds.size(), &self.map.palette, accent);
+            draw_route_stops(
+                &mut frame,
+                &self.map.camera,
+                itinerary,
+                bounds.size(),
+                &self.map.palette,
+                accent,
+            );
         }
 
         if let Some((center, _)) = user {
@@ -102,7 +131,9 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             frame.fill(&dot, USER_COLOR);
             frame.stroke(
                 &dot,
-                canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
+                canvas::Stroke::default()
+                    .with_color(Color::WHITE)
+                    .with_width(2.0),
             );
         }
 
@@ -111,7 +142,9 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
             frame.fill(&marker, accent);
             frame.stroke(
                 &marker,
-                canvas::Stroke::default().with_color(Color::WHITE).with_width(2.0),
+                canvas::Stroke::default()
+                    .with_color(Color::WHITE)
+                    .with_width(2.0),
             );
         }
 
