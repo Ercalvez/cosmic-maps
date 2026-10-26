@@ -27,6 +27,14 @@ impl LatLon {
     }
 }
 
+/// Where the user is, and how well that is known.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Position {
+    pub lat_lon: LatLon,
+    /// Radius of the area the user is in, in meters.
+    pub accuracy: f64,
+}
+
 /// A point of the Web Mercator world, which spans 0 to 1 on both axes, `y`
 /// growing southwards.
 #[derive(Debug, Clone, Copy, PartialEq)]

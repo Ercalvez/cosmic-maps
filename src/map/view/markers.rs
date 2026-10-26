@@ -8,9 +8,9 @@ use cosmic::iced::{Color, Rectangle, Size, mouse};
 
 use super::MapView;
 use super::routes::{draw_route_stops, draw_routes};
+use crate::domain::place::Shape;
 use crate::map::camera::Camera;
 use crate::map::style::MapPalette;
-use crate::services::nominatim::Shape;
 
 const POI_MARKER_RADIUS: f32 = 3.5;
 const MARKER_RADIUS: f32 = 6.0;

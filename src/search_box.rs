@@ -9,7 +9,8 @@ use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget;
 
-use crate::services::{self, photon::SearchResult};
+use crate::domain::place::SearchResult;
+use crate::services;
 
 /// Pause after typing before searching, and the shortest query searched, as in
 /// GNOME Maps.
@@ -93,7 +94,7 @@ impl SearchBox {
                         self.take(index).map(Action::Pick)
                     }
                     Err(err) => {
-                        tracing::warn!("search for {query:?} failed: {err:?}");
+                        tracing::warn!("search for {query:?} failed: {err}");
                         None
                     }
                 }
@@ -219,20 +220,12 @@ impl SearchBox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::place::Poi;
     use crate::geo::WorldPoint;
-    use crate::map::poi::Poi;
 
     fn result(name: &str) -> SearchResult {
         SearchResult {
-            poi: Poi {
-                name: name.to_owned(),
-                translated_name: None,
-                class: None,
-                subclass: None,
-                rank: 0,
-                osm_id: None,
-                position: WorldPoint::new(0.5, 0.5),
-            },
+            poi: Poi::new(name, WorldPoint::new(0.5, 0.5)),
             area: None,
         }
     }

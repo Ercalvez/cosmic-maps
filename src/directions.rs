@@ -9,15 +9,14 @@ use cosmic::iced::Length;
 use cosmic::prelude::*;
 use cosmic::widget::{self, icon, segmented_button};
 
+use crate::domain::place::Poi;
+use crate::domain::route::{Plan, RouteMode};
 use crate::fl;
-use crate::geo::LatLon;
+use crate::geo::{LatLon, Position};
 use crate::map::RouteOverlay;
-use crate::map::location::Position;
-use crate::map::poi::Poi;
 use crate::route_view::{self, Ends, RouteChoice};
 use crate::search_box::{self, SearchBox};
 use crate::services;
-use crate::services::transitous::{Plan, RouteMode};
 
 /// Messages of the directions form and its results.
 #[derive(Debug, Clone)]
@@ -396,7 +395,7 @@ impl Directions {
             Ok(plan) if plan.is_empty(query.mode) => RouteState::NotFound,
             Ok(plan) => RouteState::Found(plan),
             Err(err) => {
-                tracing::warn!("failed to find routes: {err:?}");
+                tracing::warn!("failed to find routes: {err}");
                 RouteState::Failed
             }
         };
@@ -578,19 +577,11 @@ fn field(field: Field, label: String, hint: String, search: &SearchBox) -> Eleme
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::place::SearchResult;
     use crate::geo::WorldPoint;
-    use crate::services::photon::SearchResult;
 
     fn place(name: &str) -> Poi {
-        Poi {
-            name: name.to_owned(),
-            translated_name: None,
-            class: None,
-            subclass: None,
-            rank: 0,
-            osm_id: None,
-            position: WorldPoint::new(0.5, 0.5),
-        }
+        Poi::new(name, WorldPoint::new(0.5, 0.5))
     }
 
     /// Near the Musée du Louvre, Paris.
@@ -690,8 +681,8 @@ mod tests {
         assert!(directions.open_stops.is_empty());
     }
 
-    fn itinerary() -> crate::services::transitous::Itinerary {
-        crate::services::transitous::Itinerary {
+    fn itinerary() -> crate::domain::route::Itinerary {
+        crate::domain::route::Itinerary {
             duration: 600,
             start_time: jiff::Timestamp::UNIX_EPOCH,
             end_time: jiff::Timestamp::UNIX_EPOCH,

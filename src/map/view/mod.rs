@@ -16,15 +16,10 @@ use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
 use super::camera::{Camera, MAX_ZOOM, MIN_ZOOM, TileId, zoom_showing};
-use super::location::Position;
-use super::poi::{OsmId, Poi};
 use super::state::{MapState, RenderedTile};
 use super::style::MapPalette;
-use crate::geo::{LatLon, WorldBounds, WorldPoint};
-use crate::services::{
-    self,
-    nominatim::{PoiDetails, Shape},
-};
+use crate::domain::place::{OsmId, Poi, PoiDetails, Shape};
+use crate::geo::{LatLon, Position, WorldBounds, WorldPoint};
 use canvas::MapCanvas;
 use markers::MarkerCanvas;
 pub use routes::RouteOverlay;
@@ -78,12 +73,20 @@ pub enum MapEvent {
 /// Work the map needs the app to do, returned from [`MapView::on_event`].
 #[derive(Debug, Clone, Copy)]
 pub enum MapAction {
-    /// Fetch details with [`nominatim::fetch`](crate::services::nominatim::fetch) and pass them to
+    /// Fetch the details of this object, and pass the answer to
     /// [`MapView::insert_details`].
     FetchDetails(OsmId),
-    /// Find what is at a place with [`nominatim::reverse`](crate::services::nominatim::reverse) and pass it to
-    /// [`MapView::insert_reverse`].
+    /// Find what is at a place, and pass the answer to [`MapView::insert_reverse`].
     Reverse { request: u64, at: LatLon, zoom: u8 },
+}
+
+/// What asking for a place's details came to.
+pub enum DetailsAnswer {
+    Found(PoiDetails),
+    /// The service does not know the place.
+    Unknown,
+    /// The request failed: it can be tried again.
+    Failed,
 }
 
 /// A click that hit no POI, waiting for Nominatim to say what is there.
@@ -249,17 +252,17 @@ impl MapView {
         self.camera.zoom()
     }
 
-    pub fn insert_details(&mut self, osm_id: OsmId, result: Result<PoiDetails, services::Error>) {
-        match result {
-            Ok(details) => {
+    /// Stores the answer to a [`MapAction::FetchDetails`].
+    pub fn insert_details(&mut self, osm_id: OsmId, answer: DetailsAnswer) {
+        match answer {
+            DetailsAnswer::Found(details) => {
                 self.details.insert(osm_id, DetailsState::Loaded(details));
             }
-            Err(services::Error::NotFound) => {
+            DetailsAnswer::Unknown => {
                 self.details.insert(osm_id, DetailsState::Unavailable);
             }
-            Err(services::Error::Network(err)) => {
-                // Forget the request, so selecting the POI again retries it.
-                tracing::warn!("failed to fetch details of {osm_id:?}: {err}");
+            // Forget the request, so selecting the POI again retries it.
+            DetailsAnswer::Failed => {
                 self.details.remove(&osm_id);
             }
         }
@@ -288,28 +291,21 @@ impl MapView {
         }
     }
 
-    /// Selects what a lookup found, if it is still the latest one.
-    pub fn insert_reverse(
-        &mut self,
-        request: u64,
-        result: Result<Option<(Poi, PoiDetails)>, services::Error>,
-    ) {
+    /// Selects what a lookup found, if there is anything and it is still the latest
+    /// one.
+    pub fn insert_reverse(&mut self, request: u64, found: Option<(Poi, PoiDetails)>) {
         // A newer click, or closing the panel, replaced it.
         if self.lookup.map(|lookup| lookup.request) != Some(request) {
             return;
         }
         self.lookup = None;
 
-        match result {
-            Ok(Some((poi, details))) => {
-                // The details came with the answer: no need to fetch them.
-                if let Some(osm_id) = poi.osm_id {
-                    self.details.insert(osm_id, DetailsState::Loaded(details));
-                }
-                self.selected = Some(poi);
+        if let Some((poi, details)) = found {
+            // The details came with the answer: no need to fetch them.
+            if let Some(osm_id) = poi.osm_id {
+                self.details.insert(osm_id, DetailsState::Loaded(details));
             }
-            Ok(None) => {}
-            Err(err) => tracing::warn!("failed to look up what is at the click: {err:?}"),
+            self.selected = Some(poi);
         }
     }
 

@@ -4,7 +4,6 @@
 //! above them.
 
 pub mod camera;
-pub mod location;
 pub mod poi;
 pub mod state;
 pub mod style;
@@ -12,4 +11,4 @@ pub mod view;
 pub mod worker;
 
 pub use state::RenderedTile;
-pub use view::{MapAction, MapEvent, MapView, RouteOverlay};
+pub use view::{DetailsAnswer, MapAction, MapEvent, MapView, RouteOverlay};

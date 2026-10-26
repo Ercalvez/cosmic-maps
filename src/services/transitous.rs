@@ -14,199 +14,15 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::http::{CLIENT, Error, RateLimit};
-use crate::geo::{LatLon, WorldPoint};
+use crate::domain::route::{
+    Itinerary, Leg, Line, PassedStop, Plan, RouteMode, Step, Stop, is_transit_mode,
+};
+use crate::geo::LatLon;
 
 const PLAN_URL: &str = "https://api.transitous.org/api/v6/plan";
 /// Transitous gives no numbers; plans are only requested on user actions, so one
 /// per second is plenty.
 static TRANSITOUS: RateLimit = RateLimit::new(Duration::from_secs(1));
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouteMode {
-    Walk,
-    Bike,
-    Car,
-    /// Public transit, with walking to and between stops.
-    Transit,
-}
-
-impl RouteMode {
-    /// The MOTIS mode of the route all the way by street.
-    fn direct_mode(self) -> &'static str {
-        match self {
-            Self::Walk | Self::Transit => "WALK",
-            Self::Bike => "BIKE",
-            Self::Car => "CAR",
-        }
-    }
-
-    /// Longest route all the way by street searched, in seconds. The server's
-    /// default of 30 minutes leaves out walks across a city.
-    fn max_direct_time(self) -> &'static str {
-        match self {
-            Self::Walk | Self::Transit => "7200",
-            Self::Bike => "14400",
-            Self::Car => "43200",
-        }
-    }
-}
-
-/// The routes found between two places.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Plan {
-    /// The route all the way by street, in the requested mode (walking for
-    /// transit), if possible.
-    pub direct: Option<Itinerary>,
-    /// Public transit options, empty for other modes.
-    pub transit: Vec<Itinerary>,
-    /// Cursors for transit options leaving earlier or later, passed back to [`plan`].
-    pub earlier: Option<String>,
-    pub later: Option<String>,
-}
-
-impl Plan {
-    /// Whether nothing was found for `mode`.
-    pub fn is_empty(&self, mode: RouteMode) -> bool {
-        match mode {
-            RouteMode::Walk | RouteMode::Bike | RouteMode::Car => self.direct.is_none(),
-            RouteMode::Transit => self.direct.is_none() && self.transit.is_empty(),
-        }
-    }
-}
-
-/// Real-time estimates earlier than the schedule by more than this, in seconds,
-/// are taken for errors in the feed: vehicles do not run an hour early.
-const MAX_EARLY: i64 = 300;
-
-/// A time as estimated with real-time data, and as scheduled. Both are the same
-/// without real-time data.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Planned {
-    pub estimated: Timestamp,
-    pub scheduled: Timestamp,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Itinerary {
-    /// Estimated, in seconds.
-    pub duration: u64,
-    pub start_time: Timestamp,
-    pub end_time: Timestamp,
-    /// Of the first and last legs, which MOTIS gives no itinerary times for.
-    pub scheduled_start: Timestamp,
-    pub scheduled_end: Timestamp,
-    pub transfers: u32,
-    pub legs: Vec<Leg>,
-}
-
-impl Itinerary {
-    pub fn start(&self) -> Planned {
-        Planned {
-            estimated: self.start_time,
-            scheduled: self.scheduled_start,
-        }
-    }
-
-    pub fn end(&self) -> Planned {
-        Planned {
-            estimated: self.end_time,
-            scheduled: self.scheduled_end,
-        }
-    }
-
-    /// The duration as estimated and as scheduled, in seconds.
-    pub fn durations(&self) -> (u64, u64) {
-        let scheduled = self.scheduled_end.as_second() - self.scheduled_start.as_second();
-        (self.duration, u64::try_from(scheduled).unwrap_or_default())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Leg {
-    /// MOTIS mode, such as `WALK`, `BIKE`, `CAR`, `BUS`, `TRAM` or `REGIONAL_RAIL`.
-    pub mode: String,
-    pub from: Stop,
-    pub to: Stop,
-    pub start_time: Timestamp,
-    pub end_time: Timestamp,
-    pub scheduled_start: Timestamp,
-    pub scheduled_end: Timestamp,
-    /// In seconds.
-    pub duration: u64,
-    /// In meters, for street legs.
-    pub distance: Option<f64>,
-    /// The line taken, for transit legs.
-    pub line: Option<Line>,
-    /// Stops passed between boarding and getting off, for transit legs.
-    pub stops: Vec<PassedStop>,
-    /// The leg's path, in Web Mercator coordinates spanning 0..1.
-    pub path: Vec<WorldPoint>,
-    /// Turn-by-turn instructions, for street legs.
-    pub steps: Vec<Step>,
-}
-
-impl Leg {
-    pub fn is_walk(&self) -> bool {
-        self.mode == "WALK"
-    }
-
-    pub fn start(&self) -> Planned {
-        Planned {
-            estimated: self.start_time,
-            scheduled: self.scheduled_start,
-        }
-    }
-
-    pub fn end(&self) -> Planned {
-        Planned {
-            estimated: self.end_time,
-            scheduled: self.scheduled_end,
-        }
-    }
-
-    /// On a public transit line, rather than walking, cycling or driving.
-    pub fn is_transit(&self) -> bool {
-        is_transit_mode(&self.mode)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Stop {
-    /// Stop name; MOTIS names the trip's ends `START` and `END`.
-    pub name: String,
-    pub position: WorldPoint,
-}
-
-/// A stop the vehicle calls at between boarding and getting off.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PassedStop {
-    pub name: String,
-    pub arrival: Option<Timestamp>,
-    pub scheduled_arrival: Option<Timestamp>,
-    pub position: WorldPoint,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Line {
-    /// Such as "3" or "A".
-    pub name: Option<String>,
-    /// The line's colours, when the operator publishes them.
-    pub color: Option<Color>,
-    pub text_color: Option<Color>,
-    /// Where the vehicle is heading.
-    pub headsign: Option<String>,
-    pub agency: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Step {
-    /// MOTIS direction, such as `CONTINUE`, `LEFT` or `SLIGHTLY_RIGHT`.
-    pub direction: String,
-    /// Empty when the way has no name.
-    pub street: String,
-    /// In meters.
-    pub distance: f64,
-}
 
 /// Routes from `from` to `to`, both latitude and longitude, leaving now, or the
 /// earlier or later page given by a cursor from a previous [`Plan`].
@@ -246,9 +62,9 @@ fn query(
     let mut query = vec![
         ("fromPlace", format!("{},{}", from.lat, from.lon)),
         ("toPlace", format!("{},{}", to.lat, to.lon)),
-        ("directModes", mode.direct_mode().to_owned()),
+        ("directModes", direct_mode(mode).to_owned()),
         ("transitModes", transit_modes.to_owned()),
-        ("maxDirectTime", mode.max_direct_time().to_owned()),
+        ("maxDirectTime", max_direct_time(mode).to_owned()),
     ];
     if mode == RouteMode::Bike {
         // Flatter streets when the detour is small.
@@ -260,9 +76,23 @@ fn query(
     query
 }
 
-/// Whether a MOTIS leg mode is a public transit one.
-fn is_transit_mode(mode: &str) -> bool {
-    !matches!(mode, "WALK" | "BIKE" | "CAR")
+/// The MOTIS mode of the route all the way by street.
+fn direct_mode(mode: RouteMode) -> &'static str {
+    match mode {
+        RouteMode::Walk | RouteMode::Transit => "WALK",
+        RouteMode::Bike => "BIKE",
+        RouteMode::Car => "CAR",
+    }
+}
+
+/// Longest route all the way by street searched, in seconds. The server's default
+/// of 30 minutes leaves out walks across a city.
+fn max_direct_time(mode: RouteMode) -> &'static str {
+    match mode {
+        RouteMode::Walk | RouteMode::Transit => "7200",
+        RouteMode::Bike => "14400",
+        RouteMode::Car => "43200",
+    }
 }
 
 /// The parts of a MOTIS `/api/v6/plan` response that are used.
@@ -371,7 +201,7 @@ impl RawItinerary {
             .map_or(self.start_time, |leg| leg.scheduled_start);
         let scheduled_end = legs.last().map_or(self.end_time, |leg| leg.scheduled_end);
 
-        let mut itinerary = Itinerary {
+        Itinerary {
             duration: self.duration,
             start_time: self.start_time,
             end_time: self.end_time,
@@ -379,37 +209,8 @@ impl RawItinerary {
             scheduled_end,
             transfers: self.transfers,
             legs,
-        };
-        if itinerary.has_implausible_estimates() {
-            itinerary.use_schedule();
         }
-        itinerary
-    }
-}
-
-impl Itinerary {
-    /// Some leg is estimated to run much earlier than scheduled.
-    fn has_implausible_estimates(&self) -> bool {
-        let too_early = |planned: Planned| {
-            planned.scheduled.as_second() - planned.estimated.as_second() > MAX_EARLY
-        };
-        self.legs
-            .iter()
-            .any(|leg| too_early(leg.start()) || too_early(leg.end()))
-    }
-
-    /// Drops all the real-time estimates, so the times shown stay consistent.
-    fn use_schedule(&mut self) {
-        self.start_time = self.scheduled_start;
-        self.end_time = self.scheduled_end;
-        self.duration = self.durations().1;
-        for leg in &mut self.legs {
-            leg.start_time = leg.scheduled_start;
-            leg.end_time = leg.scheduled_end;
-            for stop in &mut leg.stops {
-                stop.arrival = stop.scheduled_arrival.or(stop.arrival);
-            }
-        }
+        .without_implausible_estimates()
     }
 }
 

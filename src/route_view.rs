@@ -13,8 +13,8 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
 use crate::directions::Message;
+use crate::domain::route::{Itinerary, Leg, Plan, Planned, RouteMode, Step};
 use crate::fl;
-use crate::services::transitous::{Itinerary, Leg, Plan, Planned, RouteMode, Step};
 
 const TRANSITOUS_SOURCES: &str = "https://transitous.org/sources/";
 const OSM_COPYRIGHT: &str = "https://www.openstreetmap.org/copyright";

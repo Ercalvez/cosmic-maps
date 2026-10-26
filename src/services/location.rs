@@ -8,17 +8,10 @@ use cosmic::dialog::ashpd::{self, AppID};
 use cosmic::iced::futures::channel::mpsc::Sender;
 use cosmic::iced::futures::{SinkExt, Stream, StreamExt};
 
-use crate::geo::LatLon;
+use crate::geo::{LatLon, Position};
 
 /// Moves shorter than this, in meters, are not reported.
 const DISTANCE_THRESHOLD: u32 = 50;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Position {
-    pub lat_lon: LatLon,
-    /// Radius of the area the user is in, in meters.
-    pub accuracy: f64,
-}
 
 /// The user's position whenever it changes. Ends with an error if it cannot be
 /// known, such as when location services are off or permission is denied.

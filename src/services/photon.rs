@@ -9,8 +9,9 @@ use serde::Deserialize;
 
 use super::http::{CLIENT, Error, RateLimit};
 use super::join;
+use crate::domain::place::{OsmId, Poi, SearchResult};
 use crate::geo::LatLon;
-use crate::map::poi::{OsmId, Poi, system_languages};
+use crate::i18n::system_languages;
 
 const SEARCH_URL: &str = "https://photon.komoot.io/api/";
 const RESULT_LIMIT: &str = "8";
@@ -29,13 +30,6 @@ static LANGUAGE: LazyLock<&'static str> = LazyLock::new(|| {
         })
         .unwrap_or("default")
 });
-
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    pub poi: Poi,
-    /// Where the place is, such as "Dircksenstraße 2, Berlin, Allemagne".
-    pub area: Option<String>,
-}
 
 /// Searches places matching `query`, preferring those near `near`.
 pub async fn search(query: String, near: LatLon) -> Result<Vec<SearchResult>, Error> {
@@ -121,18 +115,15 @@ impl SearchResult {
         Some(Self {
             area: join([street, city, country], ", "),
             poi: Poi {
-                name,
-                translated_name: None,
                 class: osm_key,
                 subclass: osm_value,
-                rank: 0,
                 osm_id: match (osm_type.as_deref(), osm_id) {
                     (Some("N"), Some(id)) => Some(OsmId::Node(id)),
                     (Some("W"), Some(id)) => Some(OsmId::Way(id)),
                     (Some("R"), Some(id)) => Some(OsmId::Relation(id)),
                     _ => None,
                 },
-                position: LatLon::new(lat, lon).to_world(),
+                ..Poi::new(name, LatLon::new(lat, lon).to_world())
             },
         })
     }

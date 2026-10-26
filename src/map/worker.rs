@@ -30,9 +30,11 @@ use maplibre::{
 };
 
 use super::camera::TileId;
-use super::poi::{Poi, parse_pois, system_languages};
+use super::poi::parse_pois;
 use super::state::{MapCommand, RenderedTile};
 use super::style::MapPalette;
+use crate::domain::place::Poi;
+use crate::i18n::system_languages;
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
 

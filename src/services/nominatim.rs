@@ -10,8 +10,9 @@ use serde::Deserialize;
 
 use super::http::{CLIENT, Error, RateLimit};
 use super::join;
+use crate::domain::place::{OsmId, Poi, PoiDetails, Shape, Wheelchair};
 use crate::geo::{LatLon, WorldPoint};
-use crate::map::poi::{OsmId, Poi, system_languages};
+use crate::i18n::system_languages;
 
 const LOOKUP_URL: &str = "https://nominatim.openstreetmap.org/lookup";
 const REVERSE_URL: &str = "https://nominatim.openstreetmap.org/reverse";
@@ -24,35 +25,6 @@ static LANGUAGES: LazyLock<String> = LazyLock::new(|| system_languages().join(",
 const SHAPE_SIMPLIFICATION: &str = "0.00005";
 /// Countries writing the house number before the street, such as "10 Rue de Rivoli".
 const NUMBER_FIRST_COUNTRIES: [&str; 9] = ["au", "ca", "fr", "gb", "ie", "lu", "nz", "us", "za"];
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PoiDetails {
-    /// Street and city, such as "Schillingstraße 12, 10179 Berlin".
-    pub address: Option<String>,
-    /// Raw `opening_hours` tag, such as "Mo-Fr 09:00-19:00".
-    pub opening_hours: Option<String>,
-    pub website: Option<String>,
-    pub phone: Option<String>,
-    pub wheelchair: Option<Wheelchair>,
-    /// The place's outline or line, to highlight it on the map.
-    pub shape: Option<Shape>,
-}
-
-/// The extent of a place, in Web Mercator coordinates spanning 0..1.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Shape {
-    /// Streets and rivers: one or more lines.
-    Lines(Vec<Vec<WorldPoint>>),
-    /// Buildings and areas: the rings of one or more polygons, holes included.
-    Area(Vec<Vec<WorldPoint>>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Wheelchair {
-    Yes,
-    Limited,
-    No,
-}
 
 pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
     NOMINATIM.wait_turn().await;
@@ -205,18 +177,15 @@ impl Place {
             .or_else(|| self.address.street())?;
 
         let poi = Poi {
-            name,
-            translated_name: None,
             class: self.category.take(),
             subclass: self.kind.take(),
-            rank: 0,
             osm_id: match (self.osm_type.as_deref(), self.osm_id) {
                 (Some("node"), Some(id)) => Some(OsmId::Node(id)),
                 (Some("way"), Some(id)) => Some(OsmId::Way(id)),
                 (Some("relation"), Some(id)) => Some(OsmId::Relation(id)),
                 _ => None,
             },
-            position: LatLon::new(lat, lon).to_world(),
+            ..Poi::new(name, LatLon::new(lat, lon).to_world())
         };
         Some((poi, PoiDetails::from(self)))
     }

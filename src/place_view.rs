@@ -6,10 +6,9 @@ use cosmic::prelude::*;
 use cosmic::widget::{self, icon};
 
 use crate::app::Message;
+use crate::domain::place::{Poi, PoiDetails, Wheelchair};
 use crate::fl;
-use crate::map::poi::Poi;
 use crate::map::view::{DetailsState, Place};
-use crate::services::nominatim::{PoiDetails, Wheelchair};
 
 /// The panel's content; the drawer provides the close button and the scrolling.
 pub fn view(place: Place<'_>) -> Element<'_, Message> {

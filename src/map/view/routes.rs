@@ -5,10 +5,10 @@
 use cosmic::iced::widget::canvas::{self, Frame, Path};
 use cosmic::iced::{Color, Size};
 
+use crate::domain::route::{Itinerary, Leg};
 use crate::geo::WorldPoint;
 use crate::map::camera::Camera;
 use crate::map::style::MapPalette;
-use crate::services::transitous::{Itinerary, Leg};
 
 /// Width of the chosen route, of its outline on each side, and of the others.
 const ROUTE_WIDTH: f32 = 6.0;

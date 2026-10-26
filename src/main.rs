@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod directions;
+mod domain;
 mod geo;
 mod i18n;
 mod key_bind;

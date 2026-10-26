@@ -32,6 +32,15 @@ pub enum Error {
     NotFound,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Network(message) => write!(f, "network error: {message}"),
+            Self::NotFound => f.write_str("not found"),
+        }
+    }
+}
+
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         Self::Network(err.to_string())

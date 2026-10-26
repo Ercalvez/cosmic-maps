@@ -5,18 +5,18 @@
 
 use crate::config::{MapPosition, State};
 use crate::directions::{self, Directions, RouteRequest};
+use crate::domain::place::{OsmId, Poi, PoiDetails};
 use crate::fl;
-use crate::geo::LatLon;
+use crate::geo::{LatLon, Position};
 use crate::key_bind;
-use crate::map::location::{self, Position};
-use crate::map::poi::{OsmId, Poi};
 use crate::map::style::MapPalette;
-use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
+use crate::map::{DetailsAnswer, MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
 use crate::route_view;
 use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
 use crate::services;
-use crate::services::nominatim::{self, PoiDetails};
+use crate::services::location;
+use crate::services::nominatim;
 use crate::services::photon;
 use crate::services::transitous;
 use cosmic::app::context_drawer;
@@ -422,7 +422,15 @@ impl cosmic::Application for AppModel {
             }
 
             Message::PoiDetails(osm_id, result) => {
-                self.map.insert_details(osm_id, result);
+                let answer = match result {
+                    Ok(details) => DetailsAnswer::Found(details),
+                    Err(services::Error::NotFound) => DetailsAnswer::Unknown,
+                    Err(err) => {
+                        tracing::warn!("failed to fetch details of {osm_id:?}: {err}");
+                        DetailsAnswer::Failed
+                    }
+                };
+                self.map.insert_details(osm_id, answer);
             }
 
             Message::Location(Ok(position)) => {
@@ -438,7 +446,11 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Reverse(request, result) => {
-                self.map.insert_reverse(request, result);
+                let found = result.unwrap_or_else(|err| {
+                    tracing::warn!("failed to look up what is at the click: {err}");
+                    None
+                });
+                self.map.insert_reverse(request, found);
                 return self.sync_place_drawer();
             }
 
