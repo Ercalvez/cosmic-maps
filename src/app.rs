@@ -5,19 +5,19 @@
 
 use crate::config::{MapPosition, State};
 use crate::directions::{self, Directions, RouteRequest};
+use crate::domain::place::{OsmId, Poi, PoiDetails};
 use crate::fl;
-use crate::key_bind;
-use crate::map::location::{self, Position};
+use crate::geo::{LatLon, Position};
+use crate::key_bind::{self, Arrow, MenuAction};
 use crate::map::style::MapPalette;
-use crate::map::poi::{OsmId, Poi};
-use crate::map::{MapAction, MapEvent, MapView, RenderedTile};
+use crate::map::{DetailsAnswer, MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
-use crate::route_view;
-use crate::services::nominatim::{self, PoiDetails};
+use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
+use crate::services;
+use crate::services::location;
+use crate::services::nominatim;
 use crate::services::photon;
 use crate::services::transitous;
-use crate::services;
-use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config;
 use cosmic::iced::futures::StreamExt;
@@ -66,28 +66,19 @@ pub enum Message {
     TileReady(RenderedTile),
     PoiDetails(OsmId, Result<PoiDetails, services::Error>),
     /// The user's position, or why it cannot be known.
-    Location(Result<Position, String>),
+    Location(Result<Position, location::Error>),
     /// What a click that hit no POI found, for the lookup with this number.
     Reverse(u64, Result<Option<(Poi, PoiDetails)>, services::Error>),
     SearchActivate,
     SearchClear,
     /// The header search field.
     Search(search_box::Message),
-    /// The place panel's Directions button.
-    OpenDirections,
+    Place(place_view::Message),
     DirectionsBack,
     Directions(directions::Message),
     /// A key pressed that no widget used, for the shortcuts.
     Key(keyboard::Modifiers, keyboard::Key, keyboard::key::Physical),
     Arrow(Arrow),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arrow {
-    Left,
-    Right,
-    Up,
-    Down,
 }
 
 impl cosmic::Application for AppModel {
@@ -123,7 +114,9 @@ impl cosmic::Application for AppModel {
             .license(env!("CARGO_PKG_LICENSE"));
 
         let (state_handle, state) = State::load(Self::APP_ID);
-        let start = state.map.map(|map| (map.latitude, map.longitude, map.zoom));
+        let start = state
+            .map
+            .map(|map| (LatLon::new(map.latitude, map.longitude), map.zoom));
         let palette = MapPalette::from_theme(cosmic::theme::active().cosmic());
         let (map, tiles) = MapView::new(palette, start);
 
@@ -253,7 +246,7 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::About),
             ),
             ContextPage::Place => context_drawer::context_drawer(
-                place_view::view(self.map.place()?),
+                place_view::view(self.map.place()?).map(Message::Place),
                 Message::Map(MapEvent::ClosePanel),
             ),
             ContextPage::Directions => {
@@ -272,7 +265,7 @@ impl cosmic::Application for AppModel {
                 .title(fl!("directions"))
                 .actions(back)
                 .header(directions.form_view().map(Message::Directions))
-                .footer(route_view::attribution(Message::LaunchUrl))
+                .footer(directions::attribution(Message::LaunchUrl))
             }
         })
     }
@@ -314,156 +307,220 @@ impl cosmic::Application for AppModel {
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::Map(event) => {
-                // Clicking the map hides search results, keeping the queries.
-                if matches!(event, MapEvent::Click(_)) {
-                    self.search.hide_results();
-                    if let Some(directions) = &mut self.directions {
-                        directions.hide_results();
-                    }
-                }
-                // Closing the drawer also closes the directions form.
-                if matches!(event, MapEvent::ClosePanel) {
-                    self.directions = None;
-                    self.show_routes(false);
-                }
-                let changes_place = matches!(event, MapEvent::Click(_) | MapEvent::ClosePanel);
-                let action = self.map.on_event(event);
-                let route = if changes_place {
-                    self.sync_place_drawer()
-                } else {
-                    Task::none()
-                };
-                return Task::batch([route, self.run_map_action(action)]);
-            }
-
+            Message::Map(event) => self.on_map_event(event),
             Message::SearchActivate => {
                 self.search_active = true;
-                return widget::text_input::focus(self.search_id.clone());
+                widget::text_input::focus(self.search_id.clone())
             }
-
             Message::SearchClear => {
                 self.search_active = false;
                 self.search.clear();
+                Task::none()
             }
-
-            Message::Search(message) => match self.search.update(message) {
-                Some(search_box::Action::Query(query)) => {
-                    return self.search_places(query, Message::Search);
-                }
-                Some(search_box::Action::Pick(result)) => {
-                    let action = self.map.show_place(result.poi);
-                    let route = self.sync_place_drawer();
-                    return Task::batch([route, self.run_map_action(action)]);
-                }
-                None => {}
-            },
-
-            Message::OpenDirections => {
-                if let Some(place) = self.map.selected() {
-                    let mut directions = Directions::new(place, self.map.user_position());
-                    let actions = directions.refresh();
-                    self.directions = Some(directions);
-                    self.context_page = ContextPage::Directions;
-                    self.core.window.show_context = true;
-                    return self.run_directions(actions);
-                }
+            Message::Search(message) => self.on_search(message),
+            Message::Place(place_view::Message::OpenUrl(url)) => {
+                self.update(Message::LaunchUrl(url))
             }
-
-            Message::Directions(message) => {
-                if let Some(directions) = &mut self.directions {
-                    let actions = directions.update(message);
-                    return self.run_directions(actions);
-                }
-            }
-
+            Message::Place(place_view::Message::OpenDirections) => self.open_directions(),
+            Message::Directions(message) => self.on_directions(message),
             Message::DirectionsBack => {
-                self.directions = None;
-                self.show_routes(false);
+                self.close_directions();
                 self.context_page = ContextPage::Place;
                 self.core.window.show_context = self.map.has_place();
+                Task::none()
             }
-
             Message::Key(modifiers, key, physical_key) => {
-                let pressed = (modifiers, &key, Some(&physical_key));
-                if let Some(action) = key_bind::action(&self.key_binds, &self.key_aliases, pressed) {
-                    return self.update(menu::action::MenuAction::message(&action));
-                }
+                self.on_key(modifiers, &key, physical_key)
             }
-
-            Message::Arrow(arrow) => {
-                // Up and down move through the search results shown, if any.
-                if let Arrow::Up | Arrow::Down = arrow {
-                    let down = matches!(arrow, Arrow::Down);
-                    let header = self.search_active && self.search.move_highlight(down);
-                    let directions = !header
-                        && self
-                            .directions
-                            .as_mut()
-                            .is_some_and(|directions| directions.move_highlight(down));
-                    if header || directions {
-                        return Task::none();
-                    }
-                }
-
-                // Arrow keys move the view, so the content moves the other way.
-                let (dx, dy) = match arrow {
-                    Arrow::Left => (PAN_STEP, 0.0),
-                    Arrow::Right => (-PAN_STEP, 0.0),
-                    Arrow::Up => (0.0, PAN_STEP),
-                    Arrow::Down => (0.0, -PAN_STEP),
-                };
-                return self.update(Message::Map(MapEvent::Pan { dx, dy }));
-            }
-
+            Message::Arrow(arrow) => self.on_arrow(arrow),
             Message::PoiDetails(osm_id, result) => {
-                self.map.insert_details(osm_id, result);
+                self.on_poi_details(osm_id, result);
+                Task::none()
             }
-
-            Message::Location(Ok(position)) => {
-                self.map.set_position(position);
-                if let Some(directions) = &mut self.directions {
-                    let actions = directions.set_user_position(position);
-                    return self.run_directions(actions);
-                }
-            }
-
-            Message::Location(Err(err)) => {
-                tracing::warn!("location unavailable: {err}");
-            }
-
-            Message::Reverse(request, result) => {
-                self.map.insert_reverse(request, result);
-                return self.sync_place_drawer();
-            }
-
+            Message::Location(result) => self.on_location(result),
+            Message::Reverse(request, result) => self.on_reverse(request, result),
             Message::TileReady(tile) => {
                 self.map.insert_tile(tile);
+                Task::none()
             }
-
             Message::ToggleContextPage(context_page) => {
-                if self.context_page == context_page {
-                    // Close the context drawer if the toggled context page is the same.
-                    self.core.window.show_context = !self.core.window.show_context;
-                } else {
-                    // Open the context drawer to display the requested context page.
-                    self.context_page = context_page;
-                    self.core.window.show_context = true;
-                }
+                self.toggle_context_page(context_page);
+                Task::none()
             }
-
-            Message::LaunchUrl(url) => match open::that_detached(&url) {
-                Ok(()) => {}
-                Err(err) => {
+            Message::LaunchUrl(url) => {
+                if let Err(err) = open::that_detached(&url) {
                     tracing::error!("failed to open {url:?}: {err}");
                 }
-            },
+                Task::none()
+            }
         }
-        Task::none()
     }
 }
 
 impl AppModel {
+    /// What the map reports. Clicking it or closing its panel can change the place
+    /// the drawer shows.
+    fn on_map_event(&mut self, event: MapEvent) -> Task<cosmic::Action<Message>> {
+        // Clicking the map hides search results, keeping the queries.
+        if matches!(event, MapEvent::Click(_)) {
+            self.search.hide_results();
+            if let Some(directions) = &mut self.directions {
+                directions.hide_results();
+            }
+        }
+        // Closing the drawer also closes the directions form.
+        if matches!(event, MapEvent::ClosePanel) {
+            self.close_directions();
+        }
+        let changes_place = matches!(event, MapEvent::Click(_) | MapEvent::ClosePanel);
+        let action = self.map.on_event(event);
+        let route = if changes_place {
+            self.sync_place_drawer()
+        } else {
+            Task::none()
+        };
+        Task::batch([route, Self::run_map_action(action)])
+    }
+
+    /// The header search field: typing, and picking a place to show.
+    fn on_search(&mut self, message: search_box::Message) -> Task<cosmic::Action<Message>> {
+        match self.search.update(message) {
+            Some(search_box::Action::Query(query)) => self.search_places(query, Message::Search),
+            Some(search_box::Action::Pick(result)) => {
+                let action = self.map.show_place(result.poi);
+                let route = self.sync_place_drawer();
+                Task::batch([route, Self::run_map_action(action)])
+            }
+            None => Task::none(),
+        }
+    }
+
+    /// The place panel's Directions button.
+    fn open_directions(&mut self) -> Task<cosmic::Action<Message>> {
+        let Some(place) = self.map.selected() else {
+            return Task::none();
+        };
+        let mut directions = Directions::new(place, self.map.user_position());
+        let actions = directions.refresh();
+        self.directions = Some(directions);
+        self.context_page = ContextPage::Directions;
+        self.core.window.show_context = true;
+        self.run_directions(actions)
+    }
+
+    fn on_directions(&mut self, message: directions::Message) -> Task<cosmic::Action<Message>> {
+        let Some(directions) = &mut self.directions else {
+            return Task::none();
+        };
+        let actions = directions.update(message);
+        self.run_directions(actions)
+    }
+
+    /// Closes the directions form, and clears its routes from the map.
+    fn close_directions(&mut self) {
+        self.directions = None;
+        self.show_routes(false);
+    }
+
+    /// A key no widget used: a shortcut, if it is one.
+    fn on_key(
+        &mut self,
+        modifiers: keyboard::Modifiers,
+        key: &keyboard::Key,
+        physical_key: keyboard::key::Physical,
+    ) -> Task<cosmic::Action<Message>> {
+        let pressed = (modifiers, key, Some(&physical_key));
+        match key_bind::action(&self.key_binds, &self.key_aliases, pressed) {
+            Some(action) => {
+                cosmic::Application::update(self, menu::action::MenuAction::message(&action))
+            }
+            None => Task::none(),
+        }
+    }
+
+    fn on_arrow(&mut self, arrow: Arrow) -> Task<cosmic::Action<Message>> {
+        // Up and down move through the search results shown, if any.
+        if let Arrow::Up | Arrow::Down = arrow {
+            let down = matches!(arrow, Arrow::Down);
+            let header = self.search_active && self.search.move_highlight(down);
+            let directions = !header
+                && self
+                    .directions
+                    .as_mut()
+                    .is_some_and(|directions| directions.move_highlight(down));
+            if header || directions {
+                return Task::none();
+            }
+        }
+
+        // Arrow keys move the view, so the content moves the other way.
+        let (dx, dy) = match arrow {
+            Arrow::Left => (PAN_STEP, 0.0),
+            Arrow::Right => (-PAN_STEP, 0.0),
+            Arrow::Up => (0.0, PAN_STEP),
+            Arrow::Down => (0.0, -PAN_STEP),
+        };
+        cosmic::Application::update(self, Message::Map(MapEvent::Pan { dx, dy }))
+    }
+
+    fn on_poi_details(&mut self, osm_id: OsmId, result: Result<PoiDetails, services::Error>) {
+        let answer = match result {
+            Ok(details) => DetailsAnswer::Found(details),
+            Err(services::Error::NotFound) => DetailsAnswer::Unknown,
+            Err(err) => {
+                tracing::warn!("failed to fetch details of {osm_id:?}: {err}");
+                DetailsAnswer::Failed
+            }
+        };
+        self.map.insert_details(osm_id, answer);
+    }
+
+    /// The user's position, which the map and the directions' start follow.
+    fn on_location(
+        &mut self,
+        result: Result<Position, location::Error>,
+    ) -> Task<cosmic::Action<Message>> {
+        let position = match result {
+            Ok(position) => position,
+            Err(err) => {
+                tracing::warn!("{err}");
+                return Task::none();
+            }
+        };
+
+        self.map.set_position(position);
+        let Some(directions) = &mut self.directions else {
+            return Task::none();
+        };
+        let actions = directions.set_user_position(position);
+        self.run_directions(actions)
+    }
+
+    /// What a click that hit no POI found.
+    fn on_reverse(
+        &mut self,
+        request: u64,
+        result: Result<Option<(Poi, PoiDetails)>, services::Error>,
+    ) -> Task<cosmic::Action<Message>> {
+        let found = result.unwrap_or_else(|err| {
+            tracing::warn!("failed to look up what is at the click: {err}");
+            None
+        });
+        self.map.insert_reverse(request, found);
+        self.sync_place_drawer()
+    }
+
+    fn toggle_context_page(&mut self, context_page: ContextPage) {
+        if self.context_page == context_page {
+            // Close the context drawer if the toggled context page is the same.
+            self.core.window.show_context = !self.core.window.show_context;
+        } else {
+            // Open the context drawer to display the requested context page.
+            self.context_page = context_page;
+            self.core.window.show_context = true;
+        }
+    }
+
     /// Shows the place drawer while a place is selected, and hides it otherwise.
     /// Called when the selection may have changed, so that panning or the About
     /// drawer do not bring it back. While the directions form is open, a newly
@@ -487,7 +544,10 @@ impl AppModel {
     }
 
     /// Carries out work the directions asked for.
-    fn run_directions(&mut self, actions: Vec<directions::Action>) -> Task<cosmic::Action<Message>> {
+    fn run_directions(
+        &mut self,
+        actions: Vec<directions::Action>,
+    ) -> Task<cosmic::Action<Message>> {
         let mut tasks = Vec::with_capacity(actions.len());
         for action in actions {
             match action {
@@ -516,24 +576,20 @@ impl AppModel {
 
     fn find_route(request: RouteRequest) -> Task<cosmic::Action<Message>> {
         cosmic::task::future(async move {
-            let result = transitous::plan(request.from, request.to, request.mode, request.page).await;
+            let result =
+                transitous::plan(request.from, request.to, request.mode, request.page).await;
             Message::Directions(directions::Message::RouteFound(request.id, result))
         })
     }
 
     /// Carries out work the map asked for.
-    fn run_map_action(&self, action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
+    fn run_map_action(action: Option<MapAction>) -> Task<cosmic::Action<Message>> {
         match action {
             Some(MapAction::FetchDetails(osm_id)) => cosmic::task::future(async move {
                 Message::PoiDetails(osm_id, nominatim::fetch(osm_id).await)
             }),
-            Some(MapAction::Reverse {
-                request,
-                lat,
-                lon,
-                zoom,
-            }) => cosmic::task::future(async move {
-                Message::Reverse(request, nominatim::reverse(lat, lon, zoom).await)
+            Some(MapAction::Reverse { request, at, zoom }) => cosmic::task::future(async move {
+                Message::Reverse(request, nominatim::reverse(at, zoom).await)
             }),
             None => Task::none(),
         }
@@ -583,10 +639,10 @@ impl AppModel {
         let Some(handle) = &self.state_handle else {
             return;
         };
-        let (latitude, longitude) = self.map.center();
+        let center = self.map.center();
         let map = MapPosition {
-            latitude,
-            longitude,
+            latitude: center.lat,
+            longitude: center.lon,
             zoom: self.map.zoom(),
         };
         if let Err(err) = self.state.clone().set_map(handle, Some(map)) {
@@ -617,24 +673,20 @@ pub enum ContextPage {
     Directions,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MenuAction {
-    About,
-    ZoomIn,
-    ZoomOut,
-    /// Show the user's position.
-    Locate,
-    Pan(Arrow),
-}
-
 impl menu::action::MenuAction for MenuAction {
     type Message = Message;
 
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
-            MenuAction::ZoomIn => Message::Map(MapEvent::Zoom { delta: 1.0, anchor: None }),
-            MenuAction::ZoomOut => Message::Map(MapEvent::Zoom { delta: -1.0, anchor: None }),
+            MenuAction::ZoomIn => Message::Map(MapEvent::Zoom {
+                delta: 1.0,
+                anchor: None,
+            }),
+            MenuAction::ZoomOut => Message::Map(MapEvent::Zoom {
+                delta: -1.0,
+                anchor: None,
+            }),
             MenuAction::Locate => Message::Map(MapEvent::Locate),
             MenuAction::Pan(arrow) => Message::Arrow(*arrow),
         }

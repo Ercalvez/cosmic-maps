@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::http::{CLIENT, Error, RateLimit};
+use super::http::{Error, RateLimit, get_json};
 use super::join;
-use crate::map::camera::world_position;
-use crate::map::poi::{OsmId, Poi, system_languages};
+use crate::domain::place::{OsmId, Poi, SearchResult};
+use crate::geo::LatLon;
+use crate::i18n::system_languages;
 
 const SEARCH_URL: &str = "https://photon.komoot.io/api/";
 const RESULT_LIMIT: &str = "8";
@@ -30,33 +31,21 @@ static LANGUAGE: LazyLock<&'static str> = LazyLock::new(|| {
         .unwrap_or("default")
 });
 
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    pub poi: Poi,
-    /// Where the place is, such as "Dircksenstraße 2, Berlin, Allemagne".
-    pub area: Option<String>,
-}
-
-/// Searches places matching `query`, preferring those near `near` (latitude and
-/// longitude).
-pub async fn search(query: String, near: (f64, f64)) -> Result<Vec<SearchResult>, Error> {
-    PHOTON.wait_turn().await;
-
-    let (lat, lon) = (near.0.to_string(), near.1.to_string());
-    let response: Response = CLIENT
-        .get(SEARCH_URL)
-        .query(&[
+/// Searches places matching `query`, preferring those near `near`.
+pub async fn search(query: String, near: LatLon) -> Result<Vec<SearchResult>, Error> {
+    let (lat, lon) = (near.lat.to_string(), near.lon.to_string());
+    let response: Response = get_json(
+        &PHOTON,
+        SEARCH_URL,
+        &[
             ("q", query.as_str()),
             ("lat", lat.as_str()),
             ("lon", lon.as_str()),
             ("limit", RESULT_LIMIT),
             ("lang", *LANGUAGE),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        ],
+    )
+    .await?;
 
     Ok(response
         .features
@@ -122,18 +111,15 @@ impl SearchResult {
         Some(Self {
             area: join([street, city, country], ", "),
             poi: Poi {
-                name,
-                translated_name: None,
                 class: osm_key,
                 subclass: osm_value,
-                rank: 0,
                 osm_id: match (osm_type.as_deref(), osm_id) {
                     (Some("N"), Some(id)) => Some(OsmId::Node(id)),
                     (Some("W"), Some(id)) => Some(OsmId::Way(id)),
                     (Some("R"), Some(id)) => Some(OsmId::Relation(id)),
                     _ => None,
                 },
-                position: world_position(lat, lon),
+                ..Poi::new(name, LatLon::new(lat, lon).to_world())
             },
         })
     }
@@ -175,7 +161,7 @@ mod tests {
 
         let station = &results[0];
         assert_eq!(station.poi.name, "Alexanderplatz");
-        assert_eq!(station.poi.osm_id, Some(OsmId::Node(3908141014)));
+        assert_eq!(station.poi.osm_id, Some(OsmId::Node(3_908_141_014)));
         assert_eq!(station.poi.subclass.as_deref(), Some("station"));
         assert_eq!(
             station.area.as_deref(),

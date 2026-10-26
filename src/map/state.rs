@@ -9,8 +9,8 @@ use cosmic::iced::futures::channel::mpsc::{self, UnboundedReceiver};
 use cosmic::iced::widget::image::Handle;
 
 use super::camera::TileId;
-use super::poi::Poi;
 use super::style::MapPalette;
+use crate::domain::place::Poi;
 
 pub struct MapState {
     renderer_tx: Sender<MapCommand>,

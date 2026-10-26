@@ -91,7 +91,12 @@ fn mix(from: Color, to: Color, amount: f32) -> Color {
 /// `#rrggbb`, the form maplibre styles read.
 fn hex(color: Color) -> String {
     let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-    format!("#{:02x}{:02x}{:02x}", channel(color.r), channel(color.g), channel(color.b))
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(color.r),
+        channel(color.g),
+        channel(color.b)
+    )
 }
 
 #[cfg(test)]
@@ -108,7 +113,12 @@ mod tests {
             let palette = MapPalette::from_theme(&theme);
 
             assert_eq!(palette.land, Color::from(theme.bg_color()));
-            for color in [palette.landuse, palette.building, palette.road, palette.water] {
+            for color in [
+                palette.landuse,
+                palette.building,
+                palette.road,
+                palette.water,
+            ] {
                 assert_ne!(color, palette.land);
             }
         }

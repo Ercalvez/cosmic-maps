@@ -30,9 +30,11 @@ use maplibre::{
 };
 
 use super::camera::TileId;
-use super::poi::{Poi, parse_pois, system_languages};
-use super::style::MapPalette;
+use super::poi::parse_pois;
 use super::state::{MapCommand, RenderedTile};
+use super::style::MapPalette;
+use crate::domain::place::Poi;
+use crate::i18n::system_languages;
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
 
@@ -101,7 +103,12 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>, mut pa
     }
 }
 
-fn apply(command: MapCommand, queue: &mut Vec<TileId>, palette: &mut MapPalette, style: &mut Style) {
+fn apply(
+    command: MapCommand,
+    queue: &mut Vec<TileId>,
+    palette: &mut MapPalette,
+    style: &mut Style,
+) {
     match command {
         MapCommand::Want(tiles) => *queue = tiles,
         MapCommand::SetPalette(new_palette) => {
@@ -115,7 +122,7 @@ async fn create_map(style: Style, tx: Sender<MapImage>) -> HeadlessMap {
     let (kernel, renderer) = create_headless_renderer(TILE_SIZE, TILE_SIZE, None).await;
 
     let plugins: Vec<Box<dyn Plugin<_>>> = vec![
-        Box::new(RenderPlugin::default()),
+        Box::new(RenderPlugin),
         Box::new(VectorPlugin::<DefaultVectorTransferables>::default()),
         Box::new(RasterPlugin::<DefaultRasterTransferables>::default()),
         // Copies the rendered texture into a CPU-readable buffer.

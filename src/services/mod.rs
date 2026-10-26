@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Online services: place details (Nominatim), search (Photon) and routes
-//! (Transitous).
+//! What the app asks of the outside world: place details (Nominatim), search
+//! (Photon), routes (Transitous) and the user's position (the location portal).
 
 mod http;
+pub mod location;
 pub mod nominatim;
 pub mod photon;
 pub mod transitous;

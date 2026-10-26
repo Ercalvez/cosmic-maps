@@ -8,18 +8,60 @@ use cosmic::iced::keyboard::key::{Named, Physical};
 use cosmic::iced::keyboard::{Key, Modifiers};
 use cosmic::widget::menu::key_bind::{KeyBind, Modifier};
 
-use crate::app::{Arrow, MenuAction};
+/// Directions the arrow keys move the view or the search results in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrow {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// What a shortcut, or the same entry in a menu, does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuAction {
+    About,
+    ZoomIn,
+    ZoomOut,
+    /// Show the user's position.
+    Locate,
+    Pan(Arrow),
+}
 
 /// One shortcut per action, the one menus show.
 pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
     HashMap::from([
-        bind(&[Modifier::Ctrl], Key::Character("+".into()), MenuAction::ZoomIn),
-        bind(&[Modifier::Ctrl], Key::Character("-".into()), MenuAction::ZoomOut),
-        bind(&[Modifier::Ctrl], Key::Character("l".into()), MenuAction::Locate),
-        bind(&[], Key::Named(Named::ArrowLeft), MenuAction::Pan(Arrow::Left)),
-        bind(&[], Key::Named(Named::ArrowRight), MenuAction::Pan(Arrow::Right)),
+        bind(
+            &[Modifier::Ctrl],
+            Key::Character("+".into()),
+            MenuAction::ZoomIn,
+        ),
+        bind(
+            &[Modifier::Ctrl],
+            Key::Character("-".into()),
+            MenuAction::ZoomOut,
+        ),
+        bind(
+            &[Modifier::Ctrl],
+            Key::Character("l".into()),
+            MenuAction::Locate,
+        ),
+        bind(
+            &[],
+            Key::Named(Named::ArrowLeft),
+            MenuAction::Pan(Arrow::Left),
+        ),
+        bind(
+            &[],
+            Key::Named(Named::ArrowRight),
+            MenuAction::Pan(Arrow::Right),
+        ),
         bind(&[], Key::Named(Named::ArrowUp), MenuAction::Pan(Arrow::Up)),
-        bind(&[], Key::Named(Named::ArrowDown), MenuAction::Pan(Arrow::Down)),
+        bind(
+            &[],
+            Key::Named(Named::ArrowDown),
+            MenuAction::Pan(Arrow::Down),
+        ),
     ])
 }
 
@@ -27,11 +69,23 @@ pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
 pub fn aliases() -> Vec<(KeyBind, MenuAction)> {
     vec![
         // `+` is Shift+= on many layouts.
-        bind(&[Modifier::Ctrl, Modifier::Shift], Key::Character("+".into()), MenuAction::ZoomIn),
-        bind(&[Modifier::Ctrl], Key::Character("=".into()), MenuAction::ZoomIn),
+        bind(
+            &[Modifier::Ctrl, Modifier::Shift],
+            Key::Character("+".into()),
+            MenuAction::ZoomIn,
+        ),
+        bind(
+            &[Modifier::Ctrl],
+            Key::Character("=".into()),
+            MenuAction::ZoomIn,
+        ),
         // Without Ctrl, as in GNOME Maps.
         bind(&[], Key::Character("+".into()), MenuAction::ZoomIn),
-        bind(&[Modifier::Shift], Key::Character("+".into()), MenuAction::ZoomIn),
+        bind(
+            &[Modifier::Shift],
+            Key::Character("+".into()),
+            MenuAction::ZoomIn,
+        ),
         bind(&[], Key::Character("=".into()), MenuAction::ZoomIn),
         bind(&[], Key::Character("-".into()), MenuAction::ZoomOut),
     ]
@@ -84,7 +138,10 @@ mod tests {
     fn menus_show_one_shortcut_per_action() {
         let actions: Vec<_> = key_binds().into_values().collect();
         for (index, action) in actions.iter().enumerate() {
-            assert!(!actions[..index].contains(action), "{action:?} has two shortcuts");
+            assert!(
+                !actions[..index].contains(action),
+                "{action:?} has two shortcuts"
+            );
         }
     }
 }

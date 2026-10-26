@@ -3,21 +3,22 @@
 //! The directions form: transport mode, start and destination, and the routes
 //! found between them.
 
+mod results;
+mod view;
+
 use std::collections::HashSet;
 
-use cosmic::iced::Length;
-use cosmic::prelude::*;
-use cosmic::widget::{self, icon, segmented_button};
+use cosmic::widget::segmented_button;
 
+use crate::domain::place::Poi;
+use crate::domain::route::{Plan, RouteMode};
 use crate::fl;
-use crate::map::camera::lat_lon;
-use crate::map::location::Position;
-use crate::map::poi::Poi;
+use crate::geo::{LatLon, Position};
 use crate::map::RouteOverlay;
-use crate::services::transitous::{Plan, RouteMode};
-use crate::services;
-use crate::route_view::{self, Ends, RouteChoice};
 use crate::search_box::{self, SearchBox};
+use crate::services;
+
+pub use results::attribution;
 
 /// Messages of the directions form and its results.
 #[derive(Debug, Clone)]
@@ -54,6 +55,14 @@ pub enum Field {
     To,
 }
 
+/// Which route of a plan is chosen, to show its details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteChoice {
+    /// The route all the way by street.
+    Direct,
+    Transit(usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TravelMode {
     Foot,
@@ -64,28 +73,6 @@ pub enum TravelMode {
 
 impl TravelMode {
     const ALL: [Self; 4] = [Self::Foot, Self::Bike, Self::Transit, Self::Car];
-
-    fn label(self) -> String {
-        match self {
-            Self::Foot => fl!("travel-mode-foot"),
-            Self::Bike => fl!("travel-mode-bike"),
-            Self::Transit => fl!("travel-mode-transit"),
-            Self::Car => fl!("travel-mode-car"),
-        }
-    }
-
-    fn icon(self) -> icon::Icon {
-        let svg: &'static [u8] = match self {
-            Self::Foot => include_bytes!("../resources/icons/transport/walking-symbolic.svg"),
-            Self::Bike => include_bytes!("../resources/icons/transport/cycling-symbolic.svg"),
-            Self::Transit => include_bytes!("../resources/icons/transport/transit-symbolic.svg"),
-            Self::Car => include_bytes!("../resources/icons/transport/driving-symbolic.svg"),
-        };
-        let mut handle = icon::from_svg_bytes(svg);
-        // Drawn in one colour, so the theme can recolour it like its own icons.
-        handle.symbolic = true;
-        handle.icon()
-    }
 
     fn route_mode(self) -> RouteMode {
         match self {
@@ -106,11 +93,11 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
-    fn lat_lon(&self) -> Option<(f64, f64)> {
+    fn lat_lon(&self) -> Option<LatLon> {
         match self {
             Self::Unset => None,
-            Self::UserLocation(position) => Some((position.latitude, position.longitude)),
-            Self::Place(poi) => Some(lat_lon(poi.position)),
+            Self::UserLocation(position) => Some(position.lat_lon),
+            Self::Place(poi) => Some(poi.position.to_lat_lon()),
         }
     }
 }
@@ -129,8 +116,8 @@ pub enum RouteState {
 /// The trip a route request is for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RouteQuery {
-    from: (f64, f64),
-    to: (f64, f64),
+    from: LatLon,
+    to: LatLon,
     mode: RouteMode,
 }
 
@@ -139,8 +126,8 @@ struct RouteQuery {
 #[derive(Debug, Clone)]
 pub struct RouteRequest {
     pub id: u64,
-    pub from: (f64, f64),
-    pub to: (f64, f64),
+    pub from: LatLon,
+    pub to: LatLon,
     pub mode: RouteMode,
     /// Earlier or later options, as a cursor from a previous plan.
     pub page: Option<String>,
@@ -170,7 +157,11 @@ impl Directions {
     pub fn new(destination: &Poi, user: Option<Position>) -> Self {
         let mut modes = segmented_button::SingleSelectModel::default();
         for mode in TravelMode::ALL {
-            let entity = modes.insert().text(mode.label()).icon(mode.icon()).data(mode);
+            let entity = modes
+                .insert()
+                .text(mode.label())
+                .icon(mode.icon())
+                .data(mode);
             if mode == TravelMode::Foot {
                 entity.activate();
             }
@@ -233,7 +224,10 @@ impl Directions {
                 }
             }
             Message::Page(later) => match self.page_request(later) {
-                Some(request) => vec![Action::ShowRoutes { fit: false }, Action::FindRoute(request)],
+                Some(request) => vec![
+                    Action::ShowRoutes { fit: false },
+                    Action::FindRoute(request),
+                ],
                 None => Vec::new(),
             },
             Message::Choose(choice) => {
@@ -365,7 +359,11 @@ impl Directions {
         let RouteState::Found(plan) = &self.route else {
             return None;
         };
-        let cursor = if later { plan.later.clone() } else { plan.earlier.clone() }?;
+        let cursor = if later {
+            plan.later.clone()
+        } else {
+            plan.earlier.clone()
+        }?;
         let query = self.query?;
         Some(self.start(query, Some(cursor)))
     }
@@ -385,7 +383,7 @@ impl Directions {
             Ok(plan) if plan.is_empty(query.mode) => RouteState::NotFound,
             Ok(plan) => RouteState::Found(plan),
             Err(err) => {
-                tracing::warn!("failed to find routes: {err:?}");
+                tracing::warn!("failed to find routes: {err}");
                 RouteState::Failed
             }
         };
@@ -407,10 +405,9 @@ impl Directions {
         }
         let directs = usize::from(plan.direct.is_some());
         let chosen = match self.chosen {
-            Some(RouteChoice::Direct) => 0,
             Some(RouteChoice::Transit(index)) => directs + index,
             None if mode == RouteMode::Transit && !plan.transit.is_empty() => directs,
-            None => 0,
+            Some(RouteChoice::Direct) | None => 0,
         };
 
         Some(RouteOverlay {
@@ -449,7 +446,10 @@ impl Directions {
         let name = match &endpoint {
             Endpoint::Unset => String::new(),
             Endpoint::UserLocation(_) => fl!("your-location"),
-            Endpoint::Place(poi) => poi.translated_name.clone().unwrap_or_else(|| poi.name.clone()),
+            Endpoint::Place(poi) => poi
+                .translated_name
+                .clone()
+                .unwrap_or_else(|| poi.name.clone()),
         };
         match field {
             Field::From => self.from = endpoint,
@@ -457,136 +457,22 @@ impl Directions {
         }
         self.search_mut(field).set_text(name);
     }
-
-    /// The form, kept above the scrolling results: modes, start and destination,
-    /// and earlier/later buttons for transit.
-    pub fn form_view(&self) -> Element<'_, Message> {
-        let spacing = cosmic::theme::spacing();
-
-        let modes = widget::segmented_control::horizontal(&self.modes)
-            .on_activate(Message::Mode);
-
-        let swap = widget::tooltip(
-            widget::button::icon(icon::from_name("object-flip-vertical-symbolic"))
-                .on_press(Message::Swap),
-            widget::text::body(fl!("directions-swap")),
-            widget::tooltip::Position::Bottom,
-        );
-
-        widget::column::with_capacity(5)
-            .width(Length::Fill)
-            .push(modes)
-            .push(field(
-                Field::From,
-                fl!("directions-from"),
-                fl!("directions-choose-start"),
-                &self.from_search,
-            ))
-            .push(widget::row::with_capacity(1).push(widget::space::horizontal()).push(swap))
-            .push(field(
-                Field::To,
-                fl!("directions-to"),
-                fl!("directions-choose-destination"),
-                &self.to_search,
-            ))
-            .push_maybe(self.pages_view())
-            .spacing(spacing.space_s)
-            .into()
-    }
-
-    /// Earlier and later transit options, when routes were found by transit.
-    fn pages_view(&self) -> Option<Element<'_, Message>> {
-        let RouteState::Found(plan) = &self.route else {
-            return None;
-        };
-        let is_transit = self.query.is_some_and(|query| query.mode == RouteMode::Transit);
-        if !is_transit || plan.transit.is_empty() {
-            return None;
-        }
-
-        let pages = widget::row::with_capacity(3)
-            .push(
-                widget::button::text(fl!("route-earlier"))
-                    .on_press_maybe(plan.earlier.is_some().then_some(Message::Page(false))),
-            )
-            .push(widget::space::horizontal())
-            .push(
-                widget::button::text(fl!("route-later"))
-                    .on_press_maybe(plan.later.is_some().then_some(Message::Page(true))),
-            );
-        Some(pages.into())
-    }
-
-    /// The routes found, or the search's status: the part that scrolls.
-    pub fn results_view(&self) -> Element<'_, Message> {
-        let status = |text: String| widget::text::caption(text).into();
-        let plan = match &self.route {
-            RouteState::Idle => return widget::column::with_capacity(0).into(),
-            RouteState::Loading => return status(fl!("route-loading")),
-            RouteState::NotFound => return status(fl!("route-not-found")),
-            RouteState::Failed => return status(fl!("route-failed")),
-            RouteState::Found(plan) => plan,
-        };
-
-        let Some(query) = self.query else {
-            return widget::column::with_capacity(0).into();
-        };
-        let ends = Ends {
-            start: &self.from_search.input,
-            destination: &self.to_search.input,
-        };
-        route_view::plan_view(plan, query.mode, self.chosen, &self.open_stops, ends)
-    }
-}
-
-/// A labelled place field, with its search results under it while shown.
-fn field<'a>(
-    field: Field,
-    label: String,
-    hint: String,
-    search: &'a SearchBox,
-) -> Element<'a, Message> {
-    let input = widget::text_input::text_input(hint, &search.input)
-        .on_input(move |text| Message::Field(field, search_box::Message::Input(text)))
-        .on_submit(move |_| Message::Field(field, search_box::Message::Submit));
-
-    widget::column::with_capacity(3)
-        .push(widget::text::caption_heading(label))
-        .push(input)
-        .push_maybe(
-            (!search.results.is_empty())
-                .then(|| {
-                    search.results_view(move |index| {
-                        Message::Field(field, search_box::Message::Select(index))
-                    })
-                }),
-        )
-        .spacing(cosmic::theme::spacing().space_xxs)
-        .into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::photon::SearchResult;
+    use crate::domain::place::SearchResult;
+    use crate::geo::WorldPoint;
 
     fn place(name: &str) -> Poi {
-        Poi {
-            name: name.to_owned(),
-            translated_name: None,
-            class: None,
-            subclass: None,
-            rank: 0,
-            osm_id: None,
-            position: (0.5, 0.5),
-        }
+        Poi::new(name, WorldPoint::new(0.5, 0.5))
     }
 
     /// Near the Musée du Louvre, Paris.
     fn here() -> Position {
         Position {
-            latitude: 48.8606,
-            longitude: 2.3376,
+            lat_lon: LatLon::new(48.8606, 2.3376),
             accuracy: 50.0,
         }
     }
@@ -610,7 +496,7 @@ mod tests {
 
         let directions = Directions::new(&place("Hôtel de Ville"), None);
         assert!(matches!(directions.from, Endpoint::Unset));
-        assert!(directions.from_search.input.is_empty());
+        assert_eq!(directions.from_search.input, "");
     }
 
     #[test]
@@ -622,7 +508,8 @@ mod tests {
         assert!(!directions.user_position_known(here()));
 
         let mut directions = Directions::new(&place("Gare de Lyon"), None);
-        let input = |text: &str| Message::Field(Field::From, search_box::Message::Input(text.to_owned()));
+        let input =
+            |text: &str| Message::Field(Field::From, search_box::Message::Input(text.to_owned()));
         directions.update(input("Châtelet"));
         directions.update(input(""));
         assert!(!directions.user_position_known(here()));
@@ -679,8 +566,8 @@ mod tests {
         assert!(directions.open_stops.is_empty());
     }
 
-    fn itinerary() -> crate::services::transitous::Itinerary {
-        crate::services::transitous::Itinerary {
+    fn itinerary() -> crate::domain::route::Itinerary {
+        crate::domain::route::Itinerary {
             duration: 600,
             start_time: jiff::Timestamp::UNIX_EPOCH,
             end_time: jiff::Timestamp::UNIX_EPOCH,
@@ -726,28 +613,51 @@ mod tests {
         let field = |message| Message::Field(Field::From, message);
 
         let actions = directions.update(field(search_box::Message::Input("Châtelet".to_owned())));
-        assert!(matches!(&actions[..], [
-            Action::Search(Field::From, search_box::Query::Later(_)),
-            Action::ShowRoutes { fit: false },
-        ]));
+        assert!(matches!(
+            &actions[..],
+            [
+                Action::Search(Field::From, search_box::Query::Later(_)),
+                Action::ShowRoutes { fit: false },
+            ]
+        ));
 
-        let found = vec![SearchResult { poi: place("Châtelet"), area: None }];
-        directions.update(field(search_box::Message::Results("Châtelet".to_owned(), Ok(found))));
+        let found = vec![SearchResult {
+            poi: place("Châtelet"),
+            area: None,
+        }];
+        directions.update(field(search_box::Message::Results(
+            "Châtelet".to_owned(),
+            Ok(found),
+        )));
         let actions = directions.update(field(search_box::Message::Select(0)));
-        assert!(matches!(&actions[..], [Action::ShowRoutes { .. }, Action::FindRoute(_)]));
+        assert!(matches!(
+            &actions[..],
+            [Action::ShowRoutes { .. }, Action::FindRoute(_)]
+        ));
         assert!(matches!(&directions.from, Endpoint::Place(poi) if poi.name == "Châtelet"));
     }
 
     #[test]
     fn only_the_latest_answer_frames_the_map() {
         let mut directions = Directions::new(&place("Hôtel de Ville"), Some(here()));
-        let [_, Action::FindRoute(first)] = &directions.refresh()[..] else { panic!() };
+        let [_, Action::FindRoute(first)] = &directions.refresh()[..] else {
+            panic!()
+        };
         let first = first.id;
         let actions = directions.update(Message::Swap);
-        let [_, Action::FindRoute(second)] = &actions[..] else { panic!() };
+        let [_, Action::FindRoute(second)] = &actions[..] else {
+            panic!()
+        };
 
-        let plan = Plan { direct: Some(itinerary()), ..Plan::default() };
-        assert!(directions.update(Message::RouteFound(first, Ok(plan.clone()))).is_empty());
+        let plan = Plan {
+            direct: Some(itinerary()),
+            ..Plan::default()
+        };
+        assert!(
+            directions
+                .update(Message::RouteFound(first, Ok(plan.clone())))
+                .is_empty()
+        );
         let actions = directions.update(Message::RouteFound(second.id, Ok(plan)));
         assert!(matches!(&actions[..], [Action::ShowRoutes { fit: true }]));
     }

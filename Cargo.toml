@@ -25,7 +25,20 @@ serde = { version = "1", features = ["derive"] }
 jiff = { version = "0.2", features = ["serde"] }
 # Logging, filtered with RUST_LOG, as in other COSMIC apps.
 tracing = "0.1"
+thiserror = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Map maths converts between pixels, tile indices and degrees all the time, and
+# the values stay far inside the ranges of the types.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
 
 [dev-dependencies]
 serde_json = "1"

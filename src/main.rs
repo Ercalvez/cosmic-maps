@@ -3,11 +3,12 @@
 mod app;
 mod config;
 mod directions;
+mod domain;
+mod geo;
 mod i18n;
 mod key_bind;
 mod map;
 mod place_view;
-mod route_view;
 mod search_box;
 mod services;
 

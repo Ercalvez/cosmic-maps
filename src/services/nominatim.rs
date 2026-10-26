@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::http::{CLIENT, Error, RateLimit};
+use super::http::{Error, RateLimit, get_json};
 use super::join;
-use crate::map::camera::world_position;
-use crate::map::poi::{OsmId, Poi, system_languages};
+use crate::domain::place::{OsmId, Poi, PoiDetails, Shape, Wheelchair};
+use crate::geo::{LatLon, WorldPoint};
+use crate::i18n::system_languages;
 
 const LOOKUP_URL: &str = "https://nominatim.openstreetmap.org/lookup";
 const REVERSE_URL: &str = "https://nominatim.openstreetmap.org/reverse";
@@ -25,59 +26,32 @@ const SHAPE_SIMPLIFICATION: &str = "0.00005";
 /// Countries writing the house number before the street, such as "10 Rue de Rivoli".
 const NUMBER_FIRST_COUNTRIES: [&str; 9] = ["au", "ca", "fr", "gb", "ie", "lu", "nz", "us", "za"];
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct PoiDetails {
-    /// Street and city, such as "Schillingstraße 12, 10179 Berlin".
-    pub address: Option<String>,
-    /// Raw `opening_hours` tag, such as "Mo-Fr 09:00-19:00".
-    pub opening_hours: Option<String>,
-    pub website: Option<String>,
-    pub phone: Option<String>,
-    pub wheelchair: Option<Wheelchair>,
-    /// The place's outline or line, to highlight it on the map.
-    pub shape: Option<Shape>,
-}
-
-/// The extent of a place, in Web Mercator coordinates spanning 0..1.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Shape {
-    /// Streets and rivers: one or more lines.
-    Lines(Vec<Vec<(f64, f64)>>),
-    /// Buildings and areas: the rings of one or more polygons, holes included.
-    Area(Vec<Vec<(f64, f64)>>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Wheelchair {
-    Yes,
-    Limited,
-    No,
+/// The parameters asking for a place's address, tags and outline, after those that
+/// say which place.
+fn place_query<'a>(mut query: Vec<(&'static str, &'a str)>) -> Vec<(&'static str, &'a str)> {
+    query.extend([
+        ("format", "jsonv2"),
+        ("addressdetails", "1"),
+        ("extratags", "1"),
+        ("polygon_geojson", "1"),
+        ("polygon_threshold", SHAPE_SIMPLIFICATION),
+        ("accept-language", LANGUAGES.as_str()),
+    ]);
+    query
 }
 
 pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
-    NOMINATIM.wait_turn().await;
-
     let id = match osm_id {
         OsmId::Node(id) => format!("N{id}"),
         OsmId::Way(id) => format!("W{id}"),
         OsmId::Relation(id) => format!("R{id}"),
     };
-    let places: Vec<Place> = CLIENT
-        .get(LOOKUP_URL)
-        .query(&[
-            ("osm_ids", id.as_str()),
-            ("format", "jsonv2"),
-            ("addressdetails", "1"),
-            ("extratags", "1"),
-            ("polygon_geojson", "1"),
-            ("polygon_threshold", SHAPE_SIMPLIFICATION),
-            ("accept-language", LANGUAGES.as_str()),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let places: Vec<Place> = get_json(
+        &NOMINATIM,
+        LOOKUP_URL,
+        &place_query(vec![("osm_ids", id.as_str())]),
+    )
+    .await?;
 
     places
         .into_iter()
@@ -89,32 +63,22 @@ pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
 /// What is at a latitude and longitude, with its details, or `None` if nothing is.
 /// `zoom` sets how detailed the answer is, from 3 (a country) to 18 (a building),
 /// close to map zoom levels.
-pub async fn reverse(lat: f64, lon: f64, zoom: u8) -> Result<Option<(Poi, PoiDetails)>, Error> {
-    NOMINATIM.wait_turn().await;
-
-    let (lat, lon, zoom) = (lat.to_string(), lon.to_string(), zoom.to_string());
-    let response: ReverseResponse = CLIENT
-        .get(REVERSE_URL)
-        .query(&[
+pub async fn reverse(at: LatLon, zoom: u8) -> Result<Option<(Poi, PoiDetails)>, Error> {
+    let (lat, lon, zoom) = (at.lat.to_string(), at.lon.to_string(), zoom.to_string());
+    let response: ReverseResponse = get_json(
+        &NOMINATIM,
+        REVERSE_URL,
+        &place_query(vec![
             ("lat", lat.as_str()),
             ("lon", lon.as_str()),
             ("zoom", zoom.as_str()),
-            ("format", "jsonv2"),
-            ("addressdetails", "1"),
-            ("extratags", "1"),
-            ("polygon_geojson", "1"),
-            ("polygon_threshold", SHAPE_SIMPLIFICATION),
-            ("accept-language", LANGUAGES.as_str()),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        ]),
+    )
+    .await?;
 
     Ok(match response {
         ReverseResponse::Nothing { .. } => None,
-        ReverseResponse::Found(place) => place.into_poi(),
+        ReverseResponse::Found(place) => (*place).into_poi(),
     })
 }
 
@@ -127,7 +91,7 @@ enum ReverseResponse {
         #[expect(dead_code, reason = "only tells the two answers apart")]
         error: String,
     },
-    Found(Place),
+    Found(Box<Place>),
 }
 
 /// The parts of a Nominatim `jsonv2` result that are used.
@@ -170,9 +134,9 @@ enum KnownGeometry {
 
 impl Geometry {
     fn into_shape(self) -> Option<Shape> {
-        let to_world = |line: Vec<[f64; 2]>| -> Vec<(f64, f64)> {
+        let to_world = |line: Vec<[f64; 2]>| -> Vec<WorldPoint> {
             line.into_iter()
-                .map(|[lon, lat]| world_position(lat, lon))
+                .map(|[lon, lat]| LatLon::new(lat, lon).to_world())
                 .collect()
         };
 
@@ -205,18 +169,15 @@ impl Place {
             .or_else(|| self.address.street())?;
 
         let poi = Poi {
-            name,
-            translated_name: None,
             class: self.category.take(),
             subclass: self.kind.take(),
-            rank: 0,
             osm_id: match (self.osm_type.as_deref(), self.osm_id) {
                 (Some("node"), Some(id)) => Some(OsmId::Node(id)),
                 (Some("way"), Some(id)) => Some(OsmId::Way(id)),
                 (Some("relation"), Some(id)) => Some(OsmId::Relation(id)),
                 _ => None,
             },
-            position: world_position(lat, lon),
+            ..Poi::new(name, LatLon::new(lat, lon).to_world())
         };
         Some((poi, PoiDetails::from(self)))
     }
@@ -367,9 +328,12 @@ mod tests {
         let (poi, details) = place.into_poi().unwrap();
 
         assert_eq!(poi.name, "10 Rue de Rivoli");
-        assert_eq!(poi.osm_id, Some(OsmId::Node(703432291)));
+        assert_eq!(poi.osm_id, Some(OsmId::Node(703_432_291)));
         assert_eq!(poi.subclass.as_deref(), Some("house"));
-        assert_eq!(details.address.as_deref(), Some("10 Rue de Rivoli, 75004 Paris"));
+        assert_eq!(
+            details.address.as_deref(),
+            Some("10 Rue de Rivoli, 75004 Paris")
+        );
     }
 
     #[test]
@@ -386,16 +350,22 @@ mod tests {
             panic!("expected an area");
         };
         assert_eq!(rings.len(), 1);
-        assert_eq!(rings[0][0], (0.5, 0.5));
-        assert_eq!(rings[0][1], (0.75, 0.5));
+        assert_eq!(rings[0][0], WorldPoint::new(0.5, 0.5));
+        assert_eq!(rings[0][1], WorldPoint::new(0.75, 0.5));
 
         assert!(matches!(
             shape(r#"{"type": "LineString", "coordinates": [[13.41, 52.52], [13.42, 52.52]]}"#),
             Some(Shape::Lines(lines)) if lines.len() == 1
         ));
         // Points have no extent, and an unknown geometry does not break parsing.
-        assert_eq!(shape(r#"{"type": "Point", "coordinates": [13.41, 52.52]}"#), None);
-        assert_eq!(shape(r#"{"type": "GeometryCollection", "geometries": []}"#), None);
+        assert_eq!(
+            shape(r#"{"type": "Point", "coordinates": [13.41, 52.52]}"#),
+            None
+        );
+        assert_eq!(
+            shape(r#"{"type": "GeometryCollection", "geometries": []}"#),
+            None
+        );
     }
 
     #[test]

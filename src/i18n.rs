@@ -3,7 +3,7 @@
 //! Provides localization support for this crate.
 
 use i18n_embed::{
-    DefaultLocalizer, LanguageLoader, Localizer,
+    DefaultLocalizer, DesktopLanguageRequester, LanguageLoader, Localizer,
     fluent::{FluentLanguageLoader, fluent_language_loader},
     unic_langid::LanguageIdentifier,
 };
@@ -37,6 +37,18 @@ pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
     loader
 });
 
+/// Language subtags of the system's preferred languages, most preferred first,
+/// such as `["fr", "en"]` for `fr-FR` then `en-US`.
+pub fn system_languages() -> Vec<String> {
+    let mut languages: Vec<String> = Vec::new();
+    for requested in DesktopLanguageRequester::requested_languages() {
+        let language = requested.language.as_str().to_owned();
+        if !languages.contains(&language) {
+            languages.push(language);
+        }
+    }
+    languages
+}
 
 /// Looks up a message whose ID is only known at runtime, which `fl!()` cannot do.
 pub fn get_dynamic(message_id: &str) -> Option<String> {
@@ -58,4 +70,3 @@ macro_rules! fl {
         i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id, $($args)*)
     }};
 }
-

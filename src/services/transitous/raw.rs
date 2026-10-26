@@ -1,262 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Walking, cycling, driving and public transit routes from Transitous, the
-//! community-run MOTIS service GNOME Maps also uses for public transit.
-//!
-//! Usage policy (transitous.org/api): open-source, non-commercial apps sending a
-//! `User-Agent` with a contact, with visible attribution of transitous.org/sources
-//! and OpenStreetMap. Maintainers ask to be contacted before heavy `/plan` use.
-
-
-use std::time::Duration;
+//! The parts of MOTIS responses that are used, and their conversion to routes.
 
 use cosmic::iced::Color;
 use jiff::Timestamp;
 use serde::Deserialize;
 
-use super::http::{CLIENT, Error, RateLimit};
-use crate::map::camera::world_position;
-
-
-const PLAN_URL: &str = "https://api.transitous.org/api/v6/plan";
-/// Transitous gives no numbers; plans are only requested on user actions, so one
-/// per second is plenty.
-static TRANSITOUS: RateLimit = RateLimit::new(Duration::from_secs(1));
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouteMode {
-    Walk,
-    Bike,
-    Car,
-    /// Public transit, with walking to and between stops.
-    Transit,
-}
-
-impl RouteMode {
-    /// The MOTIS mode of the route all the way by street.
-    fn direct_mode(self) -> &'static str {
-        match self {
-            Self::Walk | Self::Transit => "WALK",
-            Self::Bike => "BIKE",
-            Self::Car => "CAR",
-        }
-    }
-
-    /// Longest route all the way by street searched, in seconds. The server's
-    /// default of 30 minutes leaves out walks across a city.
-    fn max_direct_time(self) -> &'static str {
-        match self {
-            Self::Walk | Self::Transit => "7200",
-            Self::Bike => "14400",
-            Self::Car => "43200",
-        }
-    }
-}
-
-/// The routes found between two places.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Plan {
-    /// The route all the way by street, in the requested mode (walking for
-    /// transit), if possible.
-    pub direct: Option<Itinerary>,
-    /// Public transit options, empty for other modes.
-    pub transit: Vec<Itinerary>,
-    /// Cursors for transit options leaving earlier or later, passed back to [`plan`].
-    pub earlier: Option<String>,
-    pub later: Option<String>,
-}
-
-impl Plan {
-    /// Whether nothing was found for `mode`.
-    pub fn is_empty(&self, mode: RouteMode) -> bool {
-        match mode {
-            RouteMode::Walk | RouteMode::Bike | RouteMode::Car => self.direct.is_none(),
-            RouteMode::Transit => self.direct.is_none() && self.transit.is_empty(),
-        }
-    }
-}
-
-/// Real-time estimates earlier than the schedule by more than this, in seconds,
-/// are taken for errors in the feed: vehicles do not run an hour early.
-const MAX_EARLY: i64 = 300;
-
-/// A time as estimated with real-time data, and as scheduled. Both are the same
-/// without real-time data.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Planned {
-    pub estimated: Timestamp,
-    pub scheduled: Timestamp,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Itinerary {
-    /// Estimated, in seconds.
-    pub duration: u64,
-    pub start_time: Timestamp,
-    pub end_time: Timestamp,
-    /// Of the first and last legs, which MOTIS gives no itinerary times for.
-    pub scheduled_start: Timestamp,
-    pub scheduled_end: Timestamp,
-    pub transfers: u32,
-    pub legs: Vec<Leg>,
-}
-
-impl Itinerary {
-    pub fn start(&self) -> Planned {
-        Planned { estimated: self.start_time, scheduled: self.scheduled_start }
-    }
-
-    pub fn end(&self) -> Planned {
-        Planned { estimated: self.end_time, scheduled: self.scheduled_end }
-    }
-
-    /// The duration as estimated and as scheduled, in seconds.
-    pub fn durations(&self) -> (u64, u64) {
-        let scheduled = self.scheduled_end.as_second() - self.scheduled_start.as_second();
-        (self.duration, u64::try_from(scheduled).unwrap_or_default())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Leg {
-    /// MOTIS mode, such as `WALK`, `BIKE`, `CAR`, `BUS`, `TRAM` or `REGIONAL_RAIL`.
-    pub mode: String,
-    pub from: Stop,
-    pub to: Stop,
-    pub start_time: Timestamp,
-    pub end_time: Timestamp,
-    pub scheduled_start: Timestamp,
-    pub scheduled_end: Timestamp,
-    /// In seconds.
-    pub duration: u64,
-    /// In meters, for street legs.
-    pub distance: Option<f64>,
-    /// The line taken, for transit legs.
-    pub line: Option<Line>,
-    /// Stops passed between boarding and getting off, for transit legs.
-    pub stops: Vec<PassedStop>,
-    /// The leg's path, in Web Mercator coordinates spanning 0..1.
-    pub path: Vec<(f64, f64)>,
-    /// Turn-by-turn instructions, for street legs.
-    pub steps: Vec<Step>,
-}
-
-impl Leg {
-    pub fn is_walk(&self) -> bool {
-        self.mode == "WALK"
-    }
-
-    pub fn start(&self) -> Planned {
-        Planned { estimated: self.start_time, scheduled: self.scheduled_start }
-    }
-
-    pub fn end(&self) -> Planned {
-        Planned { estimated: self.end_time, scheduled: self.scheduled_end }
-    }
-
-    /// On a public transit line, rather than walking, cycling or driving.
-    pub fn is_transit(&self) -> bool {
-        is_transit_mode(&self.mode)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Stop {
-    /// Stop name; MOTIS names the trip's ends `START` and `END`.
-    pub name: String,
-    /// Web Mercator coordinates spanning 0..1.
-    pub position: (f64, f64),
-}
-
-/// A stop the vehicle calls at between boarding and getting off.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PassedStop {
-    pub name: String,
-    pub arrival: Option<Timestamp>,
-    pub scheduled_arrival: Option<Timestamp>,
-    /// Web Mercator coordinates spanning 0..1.
-    pub position: (f64, f64),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Line {
-    /// Such as "3" or "A".
-    pub name: Option<String>,
-    /// The line's colours, when the operator publishes them.
-    pub color: Option<Color>,
-    pub text_color: Option<Color>,
-    /// Where the vehicle is heading.
-    pub headsign: Option<String>,
-    pub agency: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Step {
-    /// MOTIS direction, such as `CONTINUE`, `LEFT` or `SLIGHTLY_RIGHT`.
-    pub direction: String,
-    /// Empty when the way has no name.
-    pub street: String,
-    /// In meters.
-    pub distance: f64,
-}
-
-/// Routes from `from` to `to`, both latitude and longitude, leaving now, or the
-/// earlier or later page given by a cursor from a previous [`Plan`].
-pub async fn plan(
-    from: (f64, f64),
-    to: (f64, f64),
-    mode: RouteMode,
-    page: Option<String>,
-) -> Result<Plan, Error> {
-    TRANSITOUS.wait_turn().await;
-
-    let response: Response = CLIENT
-        .get(PLAN_URL)
-        .query(&query(from, to, mode, page))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-
-    Ok(response.into_plan())
-}
-
-/// The `/plan` query parameters.
-fn query(
-    from: (f64, f64),
-    to: (f64, f64),
-    mode: RouteMode,
-    page: Option<String>,
-) -> Vec<(&'static str, String)> {
-    // Without transit modes, only the route all the way by street is computed.
-    let transit_modes = if mode == RouteMode::Transit { "TRANSIT" } else { "" };
-    let mut query = vec![
-        ("fromPlace", format!("{},{}", from.0, from.1)),
-        ("toPlace", format!("{},{}", to.0, to.1)),
-        ("directModes", mode.direct_mode().to_owned()),
-        ("transitModes", transit_modes.to_owned()),
-        ("maxDirectTime", mode.max_direct_time().to_owned()),
-    ];
-    if mode == RouteMode::Bike {
-        // Flatter streets when the detour is small.
-        query.push(("elevationCosts", "LOW".to_owned()));
-    }
-    if let Some(page) = page {
-        query.push(("pageCursor", page));
-    }
-    query
-}
-
-/// Whether a MOTIS leg mode is a public transit one.
-fn is_transit_mode(mode: &str) -> bool {
-    !matches!(mode, "WALK" | "BIKE" | "CAR")
-}
+use super::polyline::decode_polyline;
+use crate::domain::route::{
+    Direction, Itinerary, Leg, LegMode, Line, PassedStop, Plan, Step, Stop, StopName, TransitKind,
+};
+use crate::geo::LatLon;
 
 /// The parts of a MOTIS `/api/v6/plan` response that are used.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Response {
+pub(super) struct Response {
     #[serde(default)]
     direct: Vec<RawItinerary>,
     #[serde(default)]
@@ -279,7 +38,7 @@ struct RawItinerary {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawLeg {
-    mode: String,
+    mode: RawMode,
     from: RawPlace,
     to: RawPlace,
     start_time: Timestamp,
@@ -326,16 +85,119 @@ struct RawPolyline {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawStep {
-    relative_direction: String,
+    relative_direction: RawDirection,
     #[serde(default)]
     street_name: String,
     distance: f64,
 }
 
+/// A MOTIS leg mode. Ones this does not know are taken for public transit, which
+/// is what most of them are.
+#[derive(Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum RawMode {
+    Walk,
+    Bike,
+    Car,
+    Subway,
+    Metro,
+    Bus,
+    Coach,
+    Tram,
+    Ferry,
+    Rail,
+    HighspeedRail,
+    LongDistance,
+    NightRail,
+    RegionalFastRail,
+    RegionalRail,
+    Suburban,
+    #[serde(other)]
+    Other,
+}
+
+impl From<RawMode> for LegMode {
+    fn from(mode: RawMode) -> Self {
+        match mode {
+            RawMode::Walk => Self::Walk,
+            RawMode::Bike => Self::Bike,
+            RawMode::Car => Self::Car,
+            RawMode::Subway | RawMode::Metro => Self::Transit(TransitKind::Metro),
+            RawMode::Bus | RawMode::Coach => Self::Transit(TransitKind::Bus),
+            RawMode::Tram => Self::Transit(TransitKind::Tram),
+            RawMode::Ferry => Self::Transit(TransitKind::Ferry),
+            RawMode::Rail
+            | RawMode::HighspeedRail
+            | RawMode::LongDistance
+            | RawMode::NightRail
+            | RawMode::RegionalFastRail
+            | RawMode::RegionalRail
+            | RawMode::Suburban => Self::Transit(TransitKind::Train),
+            RawMode::Other => Self::Transit(TransitKind::Other),
+        }
+    }
+}
+
+/// A MOTIS relative direction, with the spellings it also uses. Ones this does not
+/// know read as "continue".
+#[derive(Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum RawDirection {
+    Depart,
+    Continue,
+    Left,
+    Right,
+    SlightlyLeft,
+    #[serde(alias = "SLIGHT_RIGHT")]
+    SlightlyRight,
+    HardLeft,
+    HardRight,
+    CircleClockwise,
+    CircleCounterclockwise,
+    #[serde(alias = "UTRUN_LEFT")]
+    UturnLeft,
+    UturnRight,
+    Elevator,
+    Stairs,
+    EnterStation,
+    ExitStation,
+    FollowSigns,
+    #[serde(other)]
+    Other,
+}
+
+impl From<RawDirection> for Direction {
+    fn from(direction: RawDirection) -> Self {
+        match direction {
+            RawDirection::Depart => Self::Depart,
+            RawDirection::Continue | RawDirection::Other => Self::Continue,
+            RawDirection::Left => Self::Left,
+            RawDirection::Right => Self::Right,
+            RawDirection::SlightlyLeft => Self::SlightlyLeft,
+            RawDirection::SlightlyRight => Self::SlightlyRight,
+            RawDirection::HardLeft => Self::HardLeft,
+            RawDirection::HardRight => Self::HardRight,
+            RawDirection::CircleClockwise | RawDirection::CircleCounterclockwise => {
+                Self::Roundabout
+            }
+            RawDirection::UturnLeft | RawDirection::UturnRight => Self::UTurn,
+            RawDirection::Elevator => Self::Elevator,
+            RawDirection::Stairs => Self::Stairs,
+            RawDirection::EnterStation => Self::EnterStation,
+            RawDirection::ExitStation => Self::ExitStation,
+            RawDirection::FollowSigns => Self::FollowSigns,
+        }
+    }
+}
+
 impl Response {
-    fn into_plan(self) -> Plan {
+    pub(super) fn into_plan(self) -> Plan {
         Plan {
-            direct: self.direct.into_iter().next().map(RawItinerary::into_itinerary),
+            direct: self
+                .direct
+                .into_iter()
+                .next()
+                .map(RawItinerary::into_itinerary),
             transit: self
                 .itineraries
                 .into_iter()
@@ -350,10 +212,12 @@ impl Response {
 impl RawItinerary {
     fn into_itinerary(self) -> Itinerary {
         let legs: Vec<Leg> = self.legs.into_iter().map(RawLeg::into_leg).collect();
-        let scheduled_start = legs.first().map_or(self.start_time, |leg| leg.scheduled_start);
+        let scheduled_start = legs
+            .first()
+            .map_or(self.start_time, |leg| leg.scheduled_start);
         let scheduled_end = legs.last().map_or(self.end_time, |leg| leg.scheduled_end);
 
-        let mut itinerary = Itinerary {
+        Itinerary {
             duration: self.duration,
             start_time: self.start_time,
             end_time: self.end_time,
@@ -361,41 +225,15 @@ impl RawItinerary {
             scheduled_end,
             transfers: self.transfers,
             legs,
-        };
-        if itinerary.has_implausible_estimates() {
-            itinerary.use_schedule();
         }
-        itinerary
-    }
-}
-
-impl Itinerary {
-    /// Some leg is estimated to run much earlier than scheduled.
-    fn has_implausible_estimates(&self) -> bool {
-        let too_early = |planned: Planned| {
-            planned.scheduled.as_second() - planned.estimated.as_second() > MAX_EARLY
-        };
-        self.legs.iter().any(|leg| too_early(leg.start()) || too_early(leg.end()))
-    }
-
-    /// Drops all the real-time estimates, so the times shown stay consistent.
-    fn use_schedule(&mut self) {
-        self.start_time = self.scheduled_start;
-        self.end_time = self.scheduled_end;
-        self.duration = self.durations().1;
-        for leg in &mut self.legs {
-            leg.start_time = leg.scheduled_start;
-            leg.end_time = leg.scheduled_end;
-            for stop in &mut leg.stops {
-                stop.arrival = stop.scheduled_arrival.or(stop.arrival);
-            }
-        }
+        .without_implausible_estimates()
     }
 }
 
 impl RawLeg {
     fn into_leg(self) -> Leg {
-        let line = is_transit_mode(&self.mode).then(|| Line {
+        let mode = LegMode::from(self.mode);
+        let line = matches!(mode, LegMode::Transit(_)).then(|| Line {
             name: self.route_short_name,
             color: self.route_color.as_deref().and_then(hex_color),
             text_color: self.route_text_color.as_deref().and_then(hex_color),
@@ -404,7 +242,7 @@ impl RawLeg {
         });
 
         Leg {
-            mode: self.mode,
+            mode,
             from: self.from.into_stop(),
             to: self.to.into_stop(),
             start_time: self.start_time,
@@ -421,7 +259,7 @@ impl RawLeg {
                     name: stop.name,
                     arrival: stop.arrival,
                     scheduled_arrival: stop.scheduled_arrival,
-                    position: world_position(stop.lat, stop.lon),
+                    position: LatLon::new(stop.lat, stop.lon).to_world(),
                 })
                 .collect(),
             path: self
@@ -429,7 +267,7 @@ impl RawLeg {
                 .map(|geometry| {
                     decode_polyline(&geometry.points, geometry.precision)
                         .into_iter()
-                        .map(|(lat, lon)| world_position(lat, lon))
+                        .map(LatLon::to_world)
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -437,7 +275,7 @@ impl RawLeg {
                 .steps
                 .into_iter()
                 .map(|step| Step {
-                    direction: step.relative_direction,
+                    direction: step.relative_direction.into(),
                     street: step.street_name,
                     distance: step.distance,
                 })
@@ -448,9 +286,15 @@ impl RawLeg {
 
 impl RawPlace {
     fn into_stop(self) -> Stop {
+        // MOTIS names the trip's ends `START` and `END`.
+        let name = match self.name.as_str() {
+            "START" => StopName::Start,
+            "END" => StopName::End,
+            _ => StopName::Named(self.name),
+        };
         Stop {
-            name: self.name,
-            position: world_position(self.lat, self.lon),
+            name,
+            position: LatLon::new(self.lat, self.lon).to_world(),
         }
     }
 }
@@ -458,60 +302,21 @@ impl RawPlace {
 /// A colour written as `rrggbb`, as in GTFS feeds.
 fn hex_color(hex: &str) -> Option<Color> {
     let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).ok()?;
-    (hex.trim_start_matches('#').len() == 6).then(|| {
-        Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8)
-    })
-}
-
-/// Decodes an encoded polyline (Google's format) into latitudes and longitudes.
-/// `precision` is the number of decimals kept, 5 in Google's format, 6 in MOTIS.
-fn decode_polyline(encoded: &str, precision: u32) -> Vec<(f64, f64)> {
-    let factor = 10f64.powi(precision as i32);
-    let mut bytes = encoded.bytes();
-    let mut next_delta = || -> Option<i64> {
-        let mut result = 0i64;
-        let mut shift = 0;
-        loop {
-            let chunk = i64::from(bytes.next()?) - 63;
-            result |= (chunk & 0x1f) << shift;
-            shift += 5;
-            if chunk < 0x20 {
-                break;
-            }
-        }
-        // Zigzag encoding: the lowest bit is the sign.
-        Some(if result & 1 == 1 { !(result >> 1) } else { result >> 1 })
-    };
-
-    let mut points = Vec::new();
-    let (mut lat, mut lon) = (0i64, 0i64);
-    while let (Some(dlat), Some(dlon)) = (next_delta(), next_delta()) {
-        lat += dlat;
-        lon += dlon;
-        points.push((lat as f64 / factor, lon as f64 / factor));
-    }
-    points
+    (hex.trim_start_matches('#').len() == 6)
+        .then(|| Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decodes_polylines() {
-        // The example from Google's polyline format documentation.
-        let points = decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
-        let expected = [(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)];
-
-        assert_eq!(points.len(), expected.len());
-        for ((lat, lon), (expected_lat, expected_lon)) in points.into_iter().zip(expected) {
-            assert!((lat - expected_lat).abs() < 1e-9 && (lon - expected_lon).abs() < 1e-9);
-        }
-    }
+    use crate::domain::route::RouteMode;
 
     #[test]
     fn parses_hex_colors() {
-        assert_eq!(hex_color("ffbe00"), Some(Color::from_rgb8(0xff, 0xbe, 0x00)));
+        assert_eq!(
+            hex_color("ffbe00"),
+            Some(Color::from_rgb8(0xff, 0xbe, 0x00))
+        );
         assert_eq!(hex_color("#ffffff"), Some(Color::WHITE));
         assert_eq!(hex_color("fff"), None);
         assert_eq!(hex_color("not a colour"), None);
@@ -560,30 +365,43 @@ mod tests {
 
         let walk = plan.direct.unwrap();
         assert_eq!(walk.duration, 1159);
-        assert_eq!(walk.start_time, "2026-10-25T14:56:00Z".parse::<Timestamp>().unwrap());
+        assert_eq!(
+            walk.start_time,
+            "2026-10-25T14:56:00Z".parse::<Timestamp>().unwrap()
+        );
         let leg = &walk.legs[0];
         assert!(leg.is_walk());
         assert_eq!(leg.distance, Some(1358.0));
         assert_eq!(leg.line, None);
         assert_eq!(leg.path.len(), 3);
-        assert_eq!(leg.steps[0].direction, "CONTINUE");
+        assert_eq!(leg.steps[0].direction, Direction::Continue);
+        assert_eq!(leg.mode, LegMode::Walk);
+        assert_eq!(walk.legs[0].from.name, StopName::Start);
+        assert_eq!(walk.legs[0].to.name, StopName::End);
         assert_eq!(leg.steps[0].distance, 15.0);
 
         let metro = &plan.transit[0].legs[0];
         assert!(!metro.is_walk() && metro.is_transit());
-        assert_eq!(metro.from.name, "Louvre - Rivoli");
+        assert_eq!(
+            metro.from.name,
+            StopName::Named("Louvre - Rivoli".to_owned())
+        );
+        assert_eq!(metro.mode, LegMode::Transit(TransitKind::Metro));
         let line = metro.line.as_ref().unwrap();
         assert_eq!(line.name.as_deref(), Some("1"));
         assert_eq!(line.color, Some(Color::from_rgb8(0xff, 0xbe, 0x00)));
         assert_eq!(line.headsign.as_deref(), Some("Château de Vincennes"));
         assert_eq!(metro.stops.len(), 1);
         assert_eq!(metro.stops[0].name, "Châtelet");
-        assert_eq!(metro.stops[0].position, world_position(48.858, 2.347));
+        assert_eq!(
+            metro.stops[0].position,
+            LatLon::new(48.858, 2.347).to_world()
+        );
         assert_eq!(
             metro.stops[0].arrival,
             Some("2026-10-25T15:02:00Z".parse::<Timestamp>().unwrap())
         );
-        assert!(metro.steps.is_empty());
+        assert_eq!(metro.steps, Vec::new());
     }
 
     /// A walk to Louvre - Rivoli and a Metro 1 ride to Hôtel de Ville, Paris, scheduled
@@ -592,7 +410,9 @@ mod tests {
     fn metro_trip(late: i64) -> Itinerary {
         let time = |seconds: i64| {
             let scheduled: Timestamp = "2026-10-25T15:01:00Z".parse().unwrap();
-            Timestamp::from_second(scheduled.as_second() + seconds).unwrap().to_string()
+            Timestamp::from_second(scheduled.as_second() + seconds)
+                .unwrap()
+                .to_string()
         };
         let json = format!(
             r#"{{
@@ -627,7 +447,9 @@ mod tests {
             end = time(late + 120),
             stop = time(late + 60),
         );
-        serde_json::from_str::<RawItinerary>(&json).unwrap().into_itinerary()
+        serde_json::from_str::<RawItinerary>(&json)
+            .unwrap()
+            .into_itinerary()
     }
 
     fn parse(time: &str) -> Timestamp {
@@ -650,7 +472,10 @@ mod tests {
         assert_eq!(metro.start().estimated, parse("2026-10-25T15:05:00Z"));
         assert_eq!(metro.start().scheduled, parse("2026-10-25T15:01:00Z"));
         assert_eq!(metro.stops[0].arrival, Some(parse("2026-10-25T15:06:00Z")));
-        assert_eq!(metro.stops[0].scheduled_arrival, Some(parse("2026-10-25T15:02:00Z")));
+        assert_eq!(
+            metro.stops[0].scheduled_arrival,
+            Some(parse("2026-10-25T15:02:00Z"))
+        );
     }
 
     #[test]
@@ -675,10 +500,16 @@ mod tests {
     #[test]
     fn early_estimates_are_kept_within_five_minutes_and_late_ones_always() {
         // Three minutes early.
-        assert_eq!(metro_trip(-180).legs[1].start().estimated, parse("2026-10-25T14:58:00Z"));
+        assert_eq!(
+            metro_trip(-180).legs[1].start().estimated,
+            parse("2026-10-25T14:58:00Z")
+        );
         // Half an hour late.
         let late = metro_trip(1800);
-        assert_eq!(late.legs[1].start().estimated, parse("2026-10-25T15:31:00Z"));
+        assert_eq!(
+            late.legs[1].start().estimated,
+            parse("2026-10-25T15:31:00Z")
+        );
         assert_eq!(late.durations(), (2220, 420));
     }
 
@@ -694,7 +525,10 @@ mod tests {
             assert_eq!(leg.start_time, leg.scheduled_start);
             assert_eq!(leg.end_time, leg.scheduled_end);
         }
-        assert_eq!(trip.legs[1].stops[0].arrival, Some(parse("2026-10-25T15:02:00Z")));
+        assert_eq!(
+            trip.legs[1].stops[0].arrival,
+            Some(parse("2026-10-25T15:02:00Z"))
+        );
     }
 
     #[test]
@@ -705,6 +539,30 @@ mod tests {
 
         assert_eq!(plan, Plan::default());
         assert!(plan.is_empty(RouteMode::Walk) && plan.is_empty(RouteMode::Transit));
+    }
+
+    #[test]
+    fn modes_and_directions_are_parsed_once() {
+        let mode = |name: &str| LegMode::from(serde_json::from_str::<RawMode>(name).unwrap());
+        assert_eq!(mode(r#""WALK""#), LegMode::Walk);
+        assert_eq!(mode(r#""SUBWAY""#), LegMode::Transit(TransitKind::Metro));
+        assert_eq!(
+            mode(r#""REGIONAL_RAIL""#),
+            LegMode::Transit(TransitKind::Train)
+        );
+        // Modes feeds add later are public transit of an unusual kind.
+        assert_eq!(mode(r#""CABLE_CAR""#), LegMode::Transit(TransitKind::Other));
+
+        let direction =
+            |name: &str| Direction::from(serde_json::from_str::<RawDirection>(name).unwrap());
+        assert_eq!(direction(r#""LEFT""#), Direction::Left);
+        // MOTIS spells some of them in more than one way.
+        assert_eq!(direction(r#""SLIGHT_RIGHT""#), Direction::SlightlyRight);
+        assert_eq!(direction(r#""SLIGHTLY_RIGHT""#), Direction::SlightlyRight);
+        assert_eq!(direction(r#""UTRUN_LEFT""#), Direction::UTurn);
+        assert_eq!(direction(r#""CIRCLE_CLOCKWISE""#), Direction::Roundabout);
+        // Unknown ones read as "continue".
+        assert_eq!(direction(r#""SOMETHING_NEW""#), Direction::Continue);
     }
 
     #[test]
@@ -734,31 +592,5 @@ mod tests {
         assert_eq!(leg.line, None);
         assert_eq!(leg.distance, Some(3724.0));
         assert_eq!(leg.steps[0].street, "Rue de Rivoli");
-    }
-
-    #[test]
-    fn queries_follow_the_mode() {
-        let louvre = (48.8606, 2.3376);
-        let gare_de_lyon = (48.8443, 2.3744);
-        let param = |mode, key| {
-            query(louvre, gare_de_lyon, mode, None)
-                .into_iter()
-                .find(|(name, _)| *name == key)
-                .map(|(_, value)| value)
-        };
-
-        assert_eq!(param(RouteMode::Walk, "directModes").as_deref(), Some("WALK"));
-        assert_eq!(param(RouteMode::Walk, "transitModes").as_deref(), Some(""));
-        assert_eq!(param(RouteMode::Transit, "directModes").as_deref(), Some("WALK"));
-        assert_eq!(param(RouteMode::Transit, "transitModes").as_deref(), Some("TRANSIT"));
-        assert_eq!(param(RouteMode::Bike, "directModes").as_deref(), Some("BIKE"));
-        assert_eq!(param(RouteMode::Bike, "elevationCosts").as_deref(), Some("LOW"));
-        assert_eq!(param(RouteMode::Car, "directModes").as_deref(), Some("CAR"));
-        assert_eq!(param(RouteMode::Car, "elevationCosts"), None);
-        assert_eq!(param(RouteMode::Car, "maxDirectTime").as_deref(), Some("43200"));
-        assert_eq!(param(RouteMode::Walk, "fromPlace").as_deref(), Some("48.8606,2.3376"));
-
-        let page = query(louvre, gare_de_lyon, RouteMode::Transit, Some("LATER|1".to_owned()));
-        assert!(page.contains(&("pageCursor", "LATER|1".to_owned())));
     }
 }

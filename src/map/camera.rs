@@ -5,6 +5,8 @@
 
 use cosmic::iced::{Point, Size};
 
+use crate::geo::{LatLon, WorldBounds, WorldPoint};
+
 /// Edge length of a rendered tile, in logical pixels.
 pub const TILE_SIZE: f32 = 512.0;
 
@@ -51,47 +53,46 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn from_lat_lon(lat: f64, lon: f64, zoom: f64) -> Self {
-        Self::centered_on(world_position(lat, lon), zoom)
+    pub fn from_lat_lon(position: LatLon, zoom: f64) -> Self {
+        Self::centered_on(position.to_world(), zoom)
     }
 
-    /// A camera showing `position`, in Web Mercator coordinates spanning 0..1.
-    pub fn centered_on(position: (f64, f64), zoom: f64) -> Self {
+    pub fn centered_on(position: WorldPoint, zoom: f64) -> Self {
         let world = world_size(zoom);
 
         Self {
-            center: (position.0 * world, position.1 * world),
+            center: (position.x * world, position.y * world),
             zoom,
         }
     }
 
-    /// A camera showing the box from `min` to `max` (Web Mercator, spanning 0..1)
-    /// in `viewport`, leaving `padding` pixels on every side.
-    pub fn fitting(min: (f64, f64), max: (f64, f64), viewport: Size, padding: f32) -> Self {
+    /// A camera showing `bounds` in `viewport`, leaving `padding` pixels on every
+    /// side.
+    pub fn fitting(bounds: WorldBounds, viewport: Size, padding: f32) -> Self {
         let available = |span: f32| f64::from((span - 2.0 * padding).max(1.0));
         let tile = f64::from(TILE_SIZE);
         // Zoom at which each side fills the space; a point fits at any zoom.
         let fit = |extent: f64, space: f64| (space / (extent * tile)).log2();
-        let zoom = fit(max.0 - min.0, available(viewport.width))
-            .min(fit(max.1 - min.1, available(viewport.height)))
+        let zoom = fit(bounds.width(), available(viewport.width))
+            .min(fit(bounds.height(), available(viewport.height)))
             .clamp(MIN_ZOOM, MAX_ZOOM);
 
-        Self::centered_on(((min.0 + max.0) / 2.0, (min.1 + max.1) / 2.0), zoom)
+        Self::centered_on(bounds.center(), zoom)
     }
 
     /// Latitude and longitude of the center of the view.
-    pub fn center_lat_lon(&self) -> (f64, f64) {
+    pub fn center_lat_lon(&self) -> LatLon {
         let world = world_size(self.zoom);
-        lat_lon((self.center.0 / world, self.center.1 / world))
+        WorldPoint::new(self.center.0 / world, self.center.1 / world).to_lat_lon()
     }
 
-    /// Web Mercator position, spanning 0..1, of a point in the viewport.
-    pub fn to_world(&self, point: Point, viewport: Size) -> (f64, f64) {
+    /// Where a point of the viewport is in the world.
+    pub fn to_world(&self, point: Point, viewport: Size) -> WorldPoint {
         let world = world_size(self.zoom);
         let x = self.center.0 + f64::from(point.x - viewport.width / 2.0);
         let y = self.center.1 + f64::from(point.y - viewport.height / 2.0);
 
-        ((x / world).rem_euclid(1.0), (y / world).clamp(0.0, 1.0))
+        WorldPoint::new((x / world).rem_euclid(1.0), (y / world).clamp(0.0, 1.0))
     }
 
     pub fn zoom(&self) -> f64 {
@@ -103,12 +104,12 @@ impl Camera {
         EARTH_CIRCUMFERENCE * lat.to_radians().cos() / world_size(self.zoom)
     }
 
-    /// Viewport position of a point in Web Mercator coordinates spanning 0..1.
-    pub fn to_screen(&self, position: (f64, f64), viewport: Size) -> Point {
+    /// Viewport position of a point of the world.
+    pub fn to_screen(&self, position: WorldPoint, viewport: Size) -> Point {
         let world = world_size(self.zoom);
         // The world repeats horizontally: use the copy closest to the center.
-        let dx = (position.0 * world - self.center.0 + world / 2.0).rem_euclid(world) - world / 2.0;
-        let dy = position.1 * world - self.center.1;
+        let dx = (position.x * world - self.center.0 + world / 2.0).rem_euclid(world) - world / 2.0;
+        let dy = position.y * world - self.center.1;
 
         Point::new(
             viewport.width / 2.0 + dx as f32,
@@ -152,8 +153,8 @@ impl Camera {
         let first_x = (left / tile).floor() as i64;
         let last_x = ((left + f64::from(viewport.width)) / tile).floor() as i64;
         let first_y = ((top / tile).floor() as i64).max(0);
-        let last_y = (((top + f64::from(viewport.height)) / tile).floor() as i64)
-            .min(tiles_per_side - 1);
+        let last_y =
+            (((top + f64::from(viewport.height)) / tile).floor() as i64).min(tiles_per_side - 1);
 
         let mut tiles = Vec::new();
         for y in first_y..=last_y {
@@ -198,25 +199,6 @@ pub fn zoom_showing(radius: f64, lat: f64, span: f32) -> f64 {
         .clamp(MIN_ZOOM, MAX_ZOOM)
 }
 
-/// Web Mercator position of a latitude and longitude, spanning 0..1 on both axes.
-pub fn world_position(lat: f64, lon: f64) -> (f64, f64) {
-    let lat = lat.to_radians();
-    let x = (lon + 180.0) / 360.0;
-    let y = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0;
-
-    (x, y)
-}
-
-/// Latitude and longitude of a Web Mercator position spanning 0..1.
-pub fn lat_lon(position: (f64, f64)) -> (f64, f64) {
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * position.1))
-        .sinh()
-        .atan()
-        .to_degrees();
-
-    (lat, position.0 * 360.0 - 180.0)
-}
-
 fn world_size(zoom: f64) -> f64 {
     f64::from(TILE_SIZE) * 2f64.powf(zoom)
 }
@@ -228,10 +210,14 @@ mod tests {
     #[test]
     fn fitting_shows_the_whole_box() {
         // Musée du Louvre to Gare de Lyon, Paris.
-        let (min, max) = (world_position(48.8606, 2.3376), world_position(48.8443, 2.3744));
-        let (min, max) = ((min.0.min(max.0), min.1.min(max.1)), (min.0.max(max.0), min.1.max(max.1)));
+        let bounds = WorldBounds::around([
+            LatLon::new(48.8606, 2.3376).to_world(),
+            LatLon::new(48.8443, 2.3744).to_world(),
+        ])
+        .unwrap();
+        let (min, max) = (bounds.min, bounds.max);
         let viewport = Size::new(800.0, 600.0);
-        let camera = Camera::fitting(min, max, viewport, 40.0);
+        let camera = Camera::fitting(bounds, viewport, 40.0);
 
         for corner in [min, max] {
             let point = camera.to_screen(corner, viewport);
@@ -246,8 +232,9 @@ mod tests {
 
     #[test]
     fn fitting_a_point_zooms_in_fully() {
-        let point = world_position(48.8606, 2.3376);
-        let camera = Camera::fitting(point, point, Size::new(800.0, 600.0), 40.0);
+        let point = LatLon::new(48.8606, 2.3376).to_world();
+        let bounds = WorldBounds::around([point]).unwrap();
+        let camera = Camera::fitting(bounds, Size::new(800.0, 600.0), 40.0);
         assert_eq!(camera.zoom(), MAX_ZOOM);
     }
 }
