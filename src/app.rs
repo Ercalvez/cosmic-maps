@@ -9,6 +9,7 @@ use crate::domain::place::{OsmId, Poi, PoiDetails};
 use crate::fl;
 use crate::geo::{LatLon, Position};
 use crate::key_bind::{self, Arrow, MenuAction};
+use crate::map::attribution;
 use crate::map::style::MapPalette;
 use crate::map::{DetailsAnswer, MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
@@ -110,7 +111,14 @@ impl cosmic::Application for AppModel {
             .name(fl!("app-title"))
             .icon(widget::icon::from_svg_bytes(APP_ICON))
             .version(env!("CARGO_PKG_VERSION"))
-            .links([(fl!("repository"), REPOSITORY)])
+            .links([
+                (fl!("repository"), REPOSITORY),
+                ("MapLibre".to_owned(), "https://maplibre.org"),
+                (
+                    "OpenStreetMap".to_owned(),
+                    "https://www.openstreetmap.org/copyright",
+                ),
+            ])
             .license(env!("CARGO_PKG_LICENSE"));
 
         let (state_handle, state) = State::load(Self::APP_ID);
@@ -271,8 +279,14 @@ impl cosmic::Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        // The map fills the window; search results drop down from the header.
-        self.map.view(Message::Map)
+        // The map fills the window, with its credits in the corner; search results drop
+        // down from the header.
+        let credits = widget::container(attribution::view(Message::LaunchUrl))
+            .padding(cosmic::theme::spacing().space_xxs)
+            .align_right(Length::Fill)
+            .align_bottom(Length::Fill);
+
+        cosmic::iced::widget::stack![self.map.view(Message::Map), credits].into()
     }
 
     /// The user's position and the keys pressed.

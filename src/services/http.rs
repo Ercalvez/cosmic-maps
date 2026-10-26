@@ -10,15 +10,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-/// Identifies the application, as the services' usage policies ask.
-const USER_AGENT: &str = concat!(
-    env!("CARGO_PKG_NAME"),
-    "/",
-    env!("CARGO_PKG_VERSION"),
-    " (+",
-    env!("CARGO_PKG_REPOSITORY"),
-    ")"
-);
+use crate::app_info::USER_AGENT;
 
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
