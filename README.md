@@ -14,6 +14,13 @@ A [justfile](./justfile) is included by default for the [casey/just][just] comma
 - `just check` runs clippy on the project to check for linter warnings
 - `just check-json` can be used by IDEs that support LSP
 
+## Data sources
+
+- **Map tiles:** [OpenFreeMap](https://openfreemap.org), from [OpenStreetMap](https://www.openstreetmap.org/copyright) data (ODbL) in the [OpenMapTiles](https://www.openmaptiles.org/) schema, drawn with [MapLibre](https://maplibre.org). The credit is shown on the map, as OpenFreeMap asks.
+- **Place details:** [Nominatim](https://nominatim.org), OpenStreetMap's geocoder.
+- **Place search:** [Photon](https://photon.komoot.io), from OpenStreetMap data.
+- **Routes:** [Transitous](https://transitous.org/sources/) for walking, cycling, driving and public transit, credited in the directions panel.
+
 ## Translators
 
 [Fluent][fluent] is used for localization of the software. Fluent's translation files are found in the [i18n directory](./i18n). New translations may copy the [English (en) localization](./i18n/en) of the project, rename `en` to the desired [ISO 639-1 language code][iso-codes], and then translations can be provided for each [message identifier][fluent-guide]. If no translation is necessary, the message may be omitted.

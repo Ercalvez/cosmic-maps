@@ -5,13 +5,13 @@
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
 
 use cosmic::iced::futures::channel::mpsc::UnboundedSender;
 use cosmic::iced::widget::image::Handle;
 
 use maplibre::{
     context::MapContext,
-    coords::WorldTileCoords,
     headless::{
         HeadlessPlugin, create_headless_renderer, environment::HeadlessEnvironment,
         map::HeadlessMap,
@@ -33,10 +33,14 @@ use super::camera::TileId;
 use super::poi::parse_pois;
 use super::state::{MapCommand, RenderedTile};
 use super::style::MapPalette;
+use super::tile_source;
+use crate::app_info::USER_AGENT;
 use crate::domain::place::Poi;
 use crate::i18n::system_languages;
 
 const TILE_SIZE: u32 = super::camera::TILE_SIZE as u32;
+/// Longest a tile download may take.
+const TILE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A frame read back from the GPU, as RGBA pixels.
 struct MapImage {
@@ -64,6 +68,13 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>, mut pa
     // Palettes only change colours, so the map keeps this style's layers.
     let mut map = create_map(style.clone(), frame_tx).await;
     tracing::debug!("MapLibre initialized");
+    // Its own client: this thread has a runtime of its own, and one thread serves
+    // every tile, so a stuck request must give up.
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(TILE_TIMEOUT)
+        .build()
+        .expect("failed to create the tile HTTP client");
 
     let mut queue: Vec<TileId> = Vec::new();
 
@@ -84,7 +95,7 @@ async fn run(rx: Receiver<MapCommand>, tx: UnboundedSender<RenderedTile>, mut pa
         }
         let tile = queue.remove(0);
 
-        let (image, pois) = match render_tile(&mut map, &style, tile, &languages).await {
+        let (image, pois) = match render_tile(&mut map, &client, &style, tile, &languages).await {
             Some(pois) => (frame_rx.try_recv().ok(), pois),
             None => (None, Vec::new()),
         };
@@ -138,15 +149,20 @@ async fn create_map(style: Style, tx: Sender<MapImage>) -> HeadlessMap {
 /// frame is sent to the channel given to `FrameCapturePlugin`.
 async fn render_tile(
     map: &mut HeadlessMap,
+    client: &reqwest::Client,
     style: &Style,
     tile: TileId,
     languages: &[String],
 ) -> Option<Vec<Poi>> {
-    let coords = WorldTileCoords::from((tile.x, tile.y, tile.z.into()));
-    let data = match map.fetch_tile(coords).await {
+    let data = match tile_source::fetch(client, tile).await {
         Ok(data) => data,
         Err(err) => {
-            tracing::warn!("failed to fetch tile {coords}: {err:?}");
+            tracing::warn!(
+                "failed to fetch tile {}/{}/{}: {err}",
+                tile.z,
+                tile.x,
+                tile.y
+            );
             return None;
         }
     };

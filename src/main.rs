@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
+mod app_info;
 mod config;
 mod directions;
 mod domain;
