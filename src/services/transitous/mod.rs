@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use self::raw::Response;
-use super::http::{CLIENT, Error, RateLimit};
+use super::http::{Error, RateLimit, get_json};
 use crate::domain::route::{Plan, RouteMode};
 use crate::geo::LatLon;
 
@@ -27,16 +27,7 @@ pub async fn plan(
     mode: RouteMode,
     page: Option<String>,
 ) -> Result<Plan, Error> {
-    TRANSITOUS.wait_turn().await;
-
-    let response: Response = CLIENT
-        .get(PLAN_URL)
-        .query(&query(from, to, mode, page))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let response: Response = get_json(&TRANSITOUS, PLAN_URL, &query(from, to, mode, page)).await?;
 
     Ok(response.into_plan())
 }

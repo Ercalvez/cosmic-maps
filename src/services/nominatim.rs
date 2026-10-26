@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::http::{CLIENT, Error, RateLimit};
+use super::http::{Error, RateLimit, get_json};
 use super::join;
 use crate::domain::place::{OsmId, Poi, PoiDetails, Shape, Wheelchair};
 use crate::geo::{LatLon, WorldPoint};
@@ -26,30 +26,32 @@ const SHAPE_SIMPLIFICATION: &str = "0.00005";
 /// Countries writing the house number before the street, such as "10 Rue de Rivoli".
 const NUMBER_FIRST_COUNTRIES: [&str; 9] = ["au", "ca", "fr", "gb", "ie", "lu", "nz", "us", "za"];
 
-pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
-    NOMINATIM.wait_turn().await;
+/// The parameters asking for a place's address, tags and outline, after those that
+/// say which place.
+fn place_query<'a>(mut query: Vec<(&'static str, &'a str)>) -> Vec<(&'static str, &'a str)> {
+    query.extend([
+        ("format", "jsonv2"),
+        ("addressdetails", "1"),
+        ("extratags", "1"),
+        ("polygon_geojson", "1"),
+        ("polygon_threshold", SHAPE_SIMPLIFICATION),
+        ("accept-language", LANGUAGES.as_str()),
+    ]);
+    query
+}
 
+pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
     let id = match osm_id {
         OsmId::Node(id) => format!("N{id}"),
         OsmId::Way(id) => format!("W{id}"),
         OsmId::Relation(id) => format!("R{id}"),
     };
-    let places: Vec<Place> = CLIENT
-        .get(LOOKUP_URL)
-        .query(&[
-            ("osm_ids", id.as_str()),
-            ("format", "jsonv2"),
-            ("addressdetails", "1"),
-            ("extratags", "1"),
-            ("polygon_geojson", "1"),
-            ("polygon_threshold", SHAPE_SIMPLIFICATION),
-            ("accept-language", LANGUAGES.as_str()),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let places: Vec<Place> = get_json(
+        &NOMINATIM,
+        LOOKUP_URL,
+        &place_query(vec![("osm_ids", id.as_str())]),
+    )
+    .await?;
 
     places
         .into_iter()
@@ -62,27 +64,17 @@ pub async fn fetch(osm_id: OsmId) -> Result<PoiDetails, Error> {
 /// `zoom` sets how detailed the answer is, from 3 (a country) to 18 (a building),
 /// close to map zoom levels.
 pub async fn reverse(at: LatLon, zoom: u8) -> Result<Option<(Poi, PoiDetails)>, Error> {
-    NOMINATIM.wait_turn().await;
-
     let (lat, lon, zoom) = (at.lat.to_string(), at.lon.to_string(), zoom.to_string());
-    let response: ReverseResponse = CLIENT
-        .get(REVERSE_URL)
-        .query(&[
+    let response: ReverseResponse = get_json(
+        &NOMINATIM,
+        REVERSE_URL,
+        &place_query(vec![
             ("lat", lat.as_str()),
             ("lon", lon.as_str()),
             ("zoom", zoom.as_str()),
-            ("format", "jsonv2"),
-            ("addressdetails", "1"),
-            ("extratags", "1"),
-            ("polygon_geojson", "1"),
-            ("polygon_threshold", SHAPE_SIMPLIFICATION),
-            ("accept-language", LANGUAGES.as_str()),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        ]),
+    )
+    .await?;
 
     Ok(match response {
         ReverseResponse::Nothing { .. } => None,

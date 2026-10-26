@@ -25,6 +25,7 @@ serde = { version = "1", features = ["derive"] }
 jiff = { version = "0.2", features = ["serde"] }
 # Logging, filtered with RUST_LOG, as in other COSMIC apps.
 tracing = "0.1"
+thiserror = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lints.rust]

@@ -66,7 +66,7 @@ pub enum Message {
     TileReady(RenderedTile),
     PoiDetails(OsmId, Result<PoiDetails, services::Error>),
     /// The user's position, or why it cannot be known.
-    Location(Result<Position, String>),
+    Location(Result<Position, location::Error>),
     /// What a click that hit no POI found, for the lookup with this number.
     Reverse(u64, Result<Option<(Poi, PoiDetails)>, services::Error>),
     SearchActivate,
@@ -436,7 +436,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Location(Err(err)) => {
-                tracing::warn!("location unavailable: {err}");
+                tracing::warn!("{err}");
             }
 
             Message::Reverse(request, result) => {

@@ -5,6 +5,8 @@
 
 use cosmic::dialog::ashpd::desktop::location::{Accuracy, LocationProxy};
 use cosmic::dialog::ashpd::{self, AppID};
+use std::sync::Arc;
+
 use cosmic::iced::futures::channel::mpsc::Sender;
 use cosmic::iced::futures::{SinkExt, Stream, StreamExt};
 
@@ -13,17 +15,23 @@ use crate::geo::{LatLon, Position};
 /// Moves shorter than this, in meters, are not reported.
 const DISTANCE_THRESHOLD: u32 = 50;
 
+/// Why the user's position cannot be known, such as when location services are off
+/// or permission is denied. Shared, so that it can travel in messages.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("the location portal failed: {0}")]
+pub struct Error(#[source] Arc<ashpd::Error>);
+
 /// The user's position whenever it changes. Ends with an error if it cannot be
-/// known, such as when location services are off or permission is denied.
-pub fn updates(app_id: &'static str) -> impl Stream<Item = Result<Position, String>> {
+/// known.
+pub fn updates(app_id: &'static str) -> impl Stream<Item = Result<Position, Error>> {
     cosmic::iced::stream::channel(4, move |mut output: Sender<_>| async move {
         if let Err(err) = watch(app_id, &mut output).await {
-            let _ = output.send(Err(err.to_string())).await;
+            let _ = output.send(Err(Error(Arc::new(err)))).await;
         }
     })
 }
 
-async fn watch(app_id: &str, output: &mut Sender<Result<Position, String>>) -> ashpd::Result<()> {
+async fn watch(app_id: &str, output: &mut Sender<Result<Position, Error>>) -> ashpd::Result<()> {
     // Outside Flatpak, the portal only knows which app asks once told, which it
     // needs to remember the permission. Older portals lack this: carry on.
     if let Ok(app_id) = AppID::try_from(app_id) {

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::http::{CLIENT, Error, RateLimit};
+use super::http::{Error, RateLimit, get_json};
 use super::join;
 use crate::domain::place::{OsmId, Poi, SearchResult};
 use crate::geo::LatLon;
@@ -33,23 +33,19 @@ static LANGUAGE: LazyLock<&'static str> = LazyLock::new(|| {
 
 /// Searches places matching `query`, preferring those near `near`.
 pub async fn search(query: String, near: LatLon) -> Result<Vec<SearchResult>, Error> {
-    PHOTON.wait_turn().await;
-
     let (lat, lon) = (near.lat.to_string(), near.lon.to_string());
-    let response: Response = CLIENT
-        .get(SEARCH_URL)
-        .query(&[
+    let response: Response = get_json(
+        &PHOTON,
+        SEARCH_URL,
+        &[
             ("q", query.as_str()),
             ("lat", lat.as_str()),
             ("lon", lon.as_str()),
             ("limit", RESULT_LIMIT),
             ("lang", *LANGUAGE),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        ],
+    )
+    .await?;
 
     Ok(response
         .features
