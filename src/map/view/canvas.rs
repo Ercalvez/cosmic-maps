@@ -118,19 +118,14 @@ where
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry<cosmic::Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.map.palette.land);
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), self.map.tiles.palette().land);
 
         for tile in self.map.camera.visible_tiles(bounds.size()) {
             let rect = Rectangle::new(tile.position, Size::new(tile.size, tile.size));
 
-            if let Some(handle) = self
-                .map
-                .tiles
-                .get(&tile.id)
-                .and_then(|cached| cached.image.as_ref())
-            {
+            if let Some(handle) = self.map.tiles.image(tile.id) {
                 frame.draw_image(rect, handle);
-            } else if let Some((ancestor, handle)) = self.map.loaded_ancestor(tile.id) {
+            } else if let Some((ancestor, handle)) = self.map.tiles.loaded_ancestor(tile.id) {
                 // `with_clip` replaces the frame's clip instead of narrowing it, so keep
                 // the region inside the canvas or the scaled-up tile spills over the window.
                 let Some(clip) = rect.intersection(&Rectangle::with_size(bounds.size())) else {
@@ -157,7 +152,7 @@ where
                 frame.fill_rectangle(
                     rect.position() + Vector::new(1.0, 1.0),
                     Size::new(tile.size - 2.0, tile.size - 2.0),
-                    self.map.palette.placeholder,
+                    self.map.tiles.palette().placeholder,
                 );
             }
         }

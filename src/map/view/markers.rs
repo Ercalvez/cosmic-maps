@@ -4,11 +4,12 @@
 //! user's position.
 
 use cosmic::iced::widget::canvas::{self, Frame, Geometry, Path};
-use cosmic::iced::{Color, Rectangle, Size, mouse};
+use cosmic::iced::{Color, Point, Rectangle, Size, mouse};
 
 use super::MapView;
 use super::routes::{draw_route_stops, draw_routes};
-use crate::domain::place::Shape;
+use crate::domain::place::{Poi, Shape};
+use crate::geo::Position;
 use crate::map::camera::Camera;
 use crate::map::style::MapPalette;
 
@@ -27,7 +28,6 @@ pub(super) struct MarkerCanvas<'a> {
 impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for MarkerCanvas<'_> {
     type State = ();
 
-    #[expect(clippy::too_many_lines, reason = "split in a later refactor")]
     fn draw(
         &self,
         _state: &(),
@@ -38,120 +38,124 @@ impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for Mark
     ) -> Vec<Geometry<cosmic::Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
         let accent = Color::from(theme.cosmic().accent_color());
+        let (map, size) = (self.map, bounds.size());
+        let palette = map.tiles.palette();
 
         // The selected place's extent, under everything else.
-        if let Some(shape) = self.map.selected_shape() {
-            draw_shape(&mut frame, &self.map.camera, shape, bounds.size(), accent);
+        if let Some(shape) = map.selection.shape() {
+            draw_shape(&mut frame, &map.camera, shape, size, accent);
         }
 
-        if let Some(routes) = &self.map.routes {
-            draw_routes(
-                &mut frame,
-                &self.map.camera,
-                routes,
-                bounds.size(),
-                &self.map.palette,
-                accent,
-            );
+        if let Some(routes) = &map.routes {
+            draw_routes(&mut frame, &map.camera, routes, size, &palette, accent);
         }
 
         // The area the user is in, under the POI markers.
-        let user = self.map.user.map(|user| {
-            let center = self
-                .map
-                .camera
-                .to_screen(user.lat_lon.to_world(), bounds.size());
-            let radius =
-                (user.accuracy / self.map.camera.meters_per_pixel(user.lat_lon.lat)) as f32;
-            (center, radius)
-        });
+        let user = map.user.map(|user| user_area(&map.camera, user, size));
         if let Some((center, radius)) = user {
-            // Skip it when it is hidden by the dot, or when it covers the whole view.
-            let diagonal = bounds.width.hypot(bounds.height);
-            if radius > USER_DOT_RADIUS && radius < 4.0 * diagonal {
-                let area = Path::circle(center, radius);
-                frame.fill(
-                    &area,
-                    Color {
-                        a: 0.15,
-                        ..USER_COLOR
-                    },
-                );
-                frame.stroke(
-                    &area,
-                    canvas::Stroke::default()
-                        .with_color(Color {
-                            a: 0.5,
-                            ..USER_COLOR
-                        })
-                        .with_width(1.0),
-                );
-            }
+            draw_user_area(&mut frame, center, radius, size);
         }
 
-        // One path for all markers: there can be hundreds.
-        let pois = self.map.drawn_pois(bounds.size());
-        if !pois.is_empty() {
-            let markers = Path::new(|builder| {
-                for (_, position) in &pois {
-                    builder.circle(*position, POI_MARKER_RADIUS);
-                }
-            });
-            let MapPalette {
-                poi_marker,
-                poi_outline,
-                ..
-            } = self.map.palette;
-            frame.fill(&markers, poi_marker);
-            frame.stroke(
-                &markers,
-                canvas::Stroke::default()
-                    .with_color(poi_outline)
-                    .with_width(1.5),
-            );
-        }
+        draw_pois(
+            &mut frame,
+            &map.tiles.drawn_pois(&map.camera, size),
+            &palette,
+        );
 
         // Route stops above the POI markers, so they stay visible.
-        if let Some(itinerary) = self
-            .map
+        if let Some(itinerary) = map
             .routes
             .as_ref()
             .and_then(|routes| routes.itineraries.get(routes.chosen))
         {
-            draw_route_stops(
-                &mut frame,
-                &self.map.camera,
-                itinerary,
-                bounds.size(),
-                &self.map.palette,
-                accent,
-            );
+            draw_route_stops(&mut frame, &map.camera, itinerary, size, &palette, accent);
         }
 
         if let Some((center, _)) = user {
-            let dot = Path::circle(center, USER_DOT_RADIUS);
-            frame.fill(&dot, USER_COLOR);
-            frame.stroke(
-                &dot,
-                canvas::Stroke::default()
-                    .with_color(Color::WHITE)
-                    .with_width(2.0),
-            );
+            draw_user_dot(&mut frame, center);
         }
 
-        if let Some(position) = self.map.selected_position() {
-            let marker = Path::circle(position, MARKER_RADIUS);
-            frame.fill(&marker, accent);
-            frame.stroke(
-                &marker,
-                canvas::Stroke::default()
-                    .with_color(Color::WHITE)
-                    .with_width(2.0),
-            );
+        if let Some(position) = map.selected_position() {
+            draw_selection_marker(&mut frame, position, accent);
         }
 
         vec![frame.into_geometry()]
     }
+}
+
+/// Where the user is on screen, and the radius of the area they are in, in pixels.
+fn user_area(camera: &Camera, user: Position, viewport: Size) -> (Point, f32) {
+    let center = camera.to_screen(user.lat_lon.to_world(), viewport);
+    let radius = (user.accuracy / camera.meters_per_pixel(user.lat_lon.lat)) as f32;
+    (center, radius)
+}
+
+/// The area the user is in, unless it is hidden by the dot or covers the whole view.
+fn draw_user_area(frame: &mut Frame, center: Point, radius: f32, viewport: Size) {
+    let diagonal = viewport.width.hypot(viewport.height);
+    if radius <= USER_DOT_RADIUS || radius >= 4.0 * diagonal {
+        return;
+    }
+
+    let area = Path::circle(center, radius);
+    frame.fill(
+        &area,
+        Color {
+            a: 0.15,
+            ..USER_COLOR
+        },
+    );
+    frame.stroke(
+        &area,
+        canvas::Stroke::default()
+            .with_color(Color {
+                a: 0.5,
+                ..USER_COLOR
+            })
+            .with_width(1.0),
+    );
+}
+
+/// The POI markers: one path for all of them, as there can be hundreds.
+fn draw_pois(frame: &mut Frame, pois: &[(&Poi, Point)], palette: &MapPalette) {
+    if pois.is_empty() {
+        return;
+    }
+
+    let markers = Path::new(|builder| {
+        for (_, position) in pois {
+            builder.circle(*position, POI_MARKER_RADIUS);
+        }
+    });
+    frame.fill(&markers, palette.poi_marker);
+    frame.stroke(
+        &markers,
+        canvas::Stroke::default()
+            .with_color(palette.poi_outline)
+            .with_width(1.5),
+    );
+}
+
+fn draw_user_dot(frame: &mut Frame, center: Point) {
+    let dot = Path::circle(center, USER_DOT_RADIUS);
+    frame.fill(&dot, USER_COLOR);
+    frame.stroke(
+        &dot,
+        canvas::Stroke::default()
+            .with_color(Color::WHITE)
+            .with_width(2.0),
+    );
+}
+
+fn draw_selection_marker(frame: &mut Frame, position: Point, accent: Color) {
+    let marker = Path::circle(position, MARKER_RADIUS);
+    frame.fill(&marker, accent);
+    frame.stroke(
+        &marker,
+        canvas::Stroke::default()
+            .with_color(Color::WHITE)
+            .with_width(2.0),
+    );
 }
 
 /// Highlights a place: areas get a light fill and an outline, lines a thick stroke.
