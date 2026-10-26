@@ -12,24 +12,16 @@ use cosmic::widget::{self, icon};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-use crate::directions::Message;
+use super::{Message, RouteChoice};
 use crate::domain::route::{Itinerary, Leg, Plan, Planned, RouteMode, Step};
 use crate::fl;
 
 const TRANSITOUS_SOURCES: &str = "https://transitous.org/sources/";
 const OSM_COPYRIGHT: &str = "https://www.openstreetmap.org/copyright";
 
-/// Which route of a plan is chosen, to show its details.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouteChoice {
-    /// The route all the way by street.
-    Direct,
-    Transit(usize),
-}
-
 /// Names for the trip's ends, which MOTIS calls `START` and `END`.
 #[derive(Clone, Copy)]
-pub struct Ends<'a> {
+pub(super) struct Ends<'a> {
     pub start: &'a str,
     pub destination: &'a str,
 }
@@ -37,7 +29,7 @@ pub struct Ends<'a> {
 /// The routes of a plan. Walking, cycling and driving show their single route in
 /// full; transit lists the options, with the legs of the chosen one under it. `open_stops` holds the
 /// legs of the chosen option whose stops are listed.
-pub fn plan_view<'a>(
+pub(super) fn plan_view<'a>(
     plan: &'a Plan,
     mode: RouteMode,
     chosen: Option<RouteChoice>,

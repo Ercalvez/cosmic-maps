@@ -12,7 +12,6 @@ use crate::key_bind;
 use crate::map::style::MapPalette;
 use crate::map::{DetailsAnswer, MapAction, MapEvent, MapView, RenderedTile};
 use crate::place_view;
-use crate::route_view;
 use crate::search_box::{self, Query, SEARCH_DELAY, SearchBox};
 use crate::services;
 use crate::services::location;
@@ -275,7 +274,7 @@ impl cosmic::Application for AppModel {
                 .title(fl!("directions"))
                 .actions(back)
                 .header(directions.form_view().map(Message::Directions))
-                .footer(route_view::attribution(Message::LaunchUrl))
+                .footer(directions::attribution(Message::LaunchUrl))
             }
         })
     }
