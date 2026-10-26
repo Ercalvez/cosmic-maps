@@ -87,10 +87,30 @@ impl Itinerary {
     }
 }
 
+/// How a leg is travelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegMode {
+    Walk,
+    Bike,
+    Car,
+    Transit(TransitKind),
+}
+
+/// The kind of vehicle on a public transit line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitKind {
+    Metro,
+    Bus,
+    Tram,
+    Ferry,
+    Train,
+    /// Cable cars, funiculars, and whatever else feeds describe.
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Leg {
-    /// MOTIS mode, such as `WALK`, `BIKE`, `CAR`, `BUS`, `TRAM` or `REGIONAL_RAIL`.
-    pub mode: String,
+    pub mode: LegMode,
     pub from: Stop,
     pub to: Stop,
     pub start_time: Timestamp,
@@ -113,7 +133,7 @@ pub struct Leg {
 
 impl Leg {
     pub fn is_walk(&self) -> bool {
-        self.mode == "WALK"
+        self.mode == LegMode::Walk
     }
 
     pub fn start(&self) -> Planned {
@@ -132,14 +152,23 @@ impl Leg {
 
     /// On a public transit line, rather than walking, cycling or driving.
     pub fn is_transit(&self) -> bool {
-        is_transit_mode(&self.mode)
+        matches!(self.mode, LegMode::Transit(_))
     }
+}
+
+/// What a stop is called.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopName {
+    /// Where the trip starts, which has no name of its own.
+    Start,
+    /// Where the trip ends.
+    End,
+    Named(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stop {
-    /// Stop name; MOTIS names the trip's ends `START` and `END`.
-    pub name: String,
+    pub name: StopName,
     pub position: WorldPoint,
 }
 
@@ -164,19 +193,33 @@ pub struct Line {
     pub agency: Option<String>,
 }
 
+/// What to do at the start of a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Depart,
+    Continue,
+    Left,
+    Right,
+    SlightlyLeft,
+    SlightlyRight,
+    HardLeft,
+    HardRight,
+    Roundabout,
+    UTurn,
+    Elevator,
+    Stairs,
+    EnterStation,
+    ExitStation,
+    FollowSigns,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
-    /// MOTIS direction, such as `CONTINUE`, `LEFT` or `SLIGHTLY_RIGHT`.
-    pub direction: String,
+    pub direction: Direction,
     /// Empty when the way has no name.
     pub street: String,
     /// In meters.
     pub distance: f64,
-}
-
-/// Whether a MOTIS leg mode is a public transit one.
-pub fn is_transit_mode(mode: &str) -> bool {
-    !matches!(mode, "WALK" | "BIKE" | "CAR")
 }
 
 impl Itinerary {

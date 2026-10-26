@@ -7,7 +7,9 @@ use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::polyline::decode_polyline;
-use crate::domain::route::{Itinerary, Leg, Line, PassedStop, Plan, Step, Stop, is_transit_mode};
+use crate::domain::route::{
+    Direction, Itinerary, Leg, LegMode, Line, PassedStop, Plan, Step, Stop, StopName, TransitKind,
+};
 use crate::geo::LatLon;
 
 /// The parts of a MOTIS `/api/v6/plan` response that are used.
@@ -36,7 +38,7 @@ struct RawItinerary {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawLeg {
-    mode: String,
+    mode: RawMode,
     from: RawPlace,
     to: RawPlace,
     start_time: Timestamp,
@@ -83,10 +85,109 @@ struct RawPolyline {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawStep {
-    relative_direction: String,
+    relative_direction: RawDirection,
     #[serde(default)]
     street_name: String,
     distance: f64,
+}
+
+/// A MOTIS leg mode. Ones this does not know are taken for public transit, which
+/// is what most of them are.
+#[derive(Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum RawMode {
+    Walk,
+    Bike,
+    Car,
+    Subway,
+    Metro,
+    Bus,
+    Coach,
+    Tram,
+    Ferry,
+    Rail,
+    HighspeedRail,
+    LongDistance,
+    NightRail,
+    RegionalFastRail,
+    RegionalRail,
+    Suburban,
+    #[serde(other)]
+    Other,
+}
+
+impl From<RawMode> for LegMode {
+    fn from(mode: RawMode) -> Self {
+        match mode {
+            RawMode::Walk => Self::Walk,
+            RawMode::Bike => Self::Bike,
+            RawMode::Car => Self::Car,
+            RawMode::Subway | RawMode::Metro => Self::Transit(TransitKind::Metro),
+            RawMode::Bus | RawMode::Coach => Self::Transit(TransitKind::Bus),
+            RawMode::Tram => Self::Transit(TransitKind::Tram),
+            RawMode::Ferry => Self::Transit(TransitKind::Ferry),
+            RawMode::Rail
+            | RawMode::HighspeedRail
+            | RawMode::LongDistance
+            | RawMode::NightRail
+            | RawMode::RegionalFastRail
+            | RawMode::RegionalRail
+            | RawMode::Suburban => Self::Transit(TransitKind::Train),
+            RawMode::Other => Self::Transit(TransitKind::Other),
+        }
+    }
+}
+
+/// A MOTIS relative direction, with the spellings it also uses. Ones this does not
+/// know read as "continue".
+#[derive(Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum RawDirection {
+    Depart,
+    Continue,
+    Left,
+    Right,
+    SlightlyLeft,
+    #[serde(alias = "SLIGHT_RIGHT")]
+    SlightlyRight,
+    HardLeft,
+    HardRight,
+    CircleClockwise,
+    CircleCounterclockwise,
+    #[serde(alias = "UTRUN_LEFT")]
+    UturnLeft,
+    UturnRight,
+    Elevator,
+    Stairs,
+    EnterStation,
+    ExitStation,
+    FollowSigns,
+    #[serde(other)]
+    Other,
+}
+
+impl From<RawDirection> for Direction {
+    fn from(direction: RawDirection) -> Self {
+        match direction {
+            RawDirection::Depart => Self::Depart,
+            RawDirection::Continue | RawDirection::Other => Self::Continue,
+            RawDirection::Left => Self::Left,
+            RawDirection::Right => Self::Right,
+            RawDirection::SlightlyLeft => Self::SlightlyLeft,
+            RawDirection::SlightlyRight => Self::SlightlyRight,
+            RawDirection::HardLeft => Self::HardLeft,
+            RawDirection::HardRight => Self::HardRight,
+            RawDirection::CircleClockwise | RawDirection::CircleCounterclockwise => {
+                Self::Roundabout
+            }
+            RawDirection::UturnLeft | RawDirection::UturnRight => Self::UTurn,
+            RawDirection::Elevator => Self::Elevator,
+            RawDirection::Stairs => Self::Stairs,
+            RawDirection::EnterStation => Self::EnterStation,
+            RawDirection::ExitStation => Self::ExitStation,
+            RawDirection::FollowSigns => Self::FollowSigns,
+        }
+    }
 }
 
 impl Response {
@@ -131,7 +232,8 @@ impl RawItinerary {
 
 impl RawLeg {
     fn into_leg(self) -> Leg {
-        let line = is_transit_mode(&self.mode).then(|| Line {
+        let mode = LegMode::from(self.mode);
+        let line = matches!(mode, LegMode::Transit(_)).then(|| Line {
             name: self.route_short_name,
             color: self.route_color.as_deref().and_then(hex_color),
             text_color: self.route_text_color.as_deref().and_then(hex_color),
@@ -140,7 +242,7 @@ impl RawLeg {
         });
 
         Leg {
-            mode: self.mode,
+            mode,
             from: self.from.into_stop(),
             to: self.to.into_stop(),
             start_time: self.start_time,
@@ -173,7 +275,7 @@ impl RawLeg {
                 .steps
                 .into_iter()
                 .map(|step| Step {
-                    direction: step.relative_direction,
+                    direction: step.relative_direction.into(),
                     street: step.street_name,
                     distance: step.distance,
                 })
@@ -184,8 +286,14 @@ impl RawLeg {
 
 impl RawPlace {
     fn into_stop(self) -> Stop {
+        // MOTIS names the trip's ends `START` and `END`.
+        let name = match self.name.as_str() {
+            "START" => StopName::Start,
+            "END" => StopName::End,
+            _ => StopName::Named(self.name),
+        };
         Stop {
-            name: self.name,
+            name,
             position: LatLon::new(self.lat, self.lon).to_world(),
         }
     }
@@ -266,12 +374,19 @@ mod tests {
         assert_eq!(leg.distance, Some(1358.0));
         assert_eq!(leg.line, None);
         assert_eq!(leg.path.len(), 3);
-        assert_eq!(leg.steps[0].direction, "CONTINUE");
+        assert_eq!(leg.steps[0].direction, Direction::Continue);
+        assert_eq!(leg.mode, LegMode::Walk);
+        assert_eq!(walk.legs[0].from.name, StopName::Start);
+        assert_eq!(walk.legs[0].to.name, StopName::End);
         assert_eq!(leg.steps[0].distance, 15.0);
 
         let metro = &plan.transit[0].legs[0];
         assert!(!metro.is_walk() && metro.is_transit());
-        assert_eq!(metro.from.name, "Louvre - Rivoli");
+        assert_eq!(
+            metro.from.name,
+            StopName::Named("Louvre - Rivoli".to_owned())
+        );
+        assert_eq!(metro.mode, LegMode::Transit(TransitKind::Metro));
         let line = metro.line.as_ref().unwrap();
         assert_eq!(line.name.as_deref(), Some("1"));
         assert_eq!(line.color, Some(Color::from_rgb8(0xff, 0xbe, 0x00)));
@@ -424,6 +539,30 @@ mod tests {
 
         assert_eq!(plan, Plan::default());
         assert!(plan.is_empty(RouteMode::Walk) && plan.is_empty(RouteMode::Transit));
+    }
+
+    #[test]
+    fn modes_and_directions_are_parsed_once() {
+        let mode = |name: &str| LegMode::from(serde_json::from_str::<RawMode>(name).unwrap());
+        assert_eq!(mode(r#""WALK""#), LegMode::Walk);
+        assert_eq!(mode(r#""SUBWAY""#), LegMode::Transit(TransitKind::Metro));
+        assert_eq!(
+            mode(r#""REGIONAL_RAIL""#),
+            LegMode::Transit(TransitKind::Train)
+        );
+        // Modes feeds add later are public transit of an unusual kind.
+        assert_eq!(mode(r#""CABLE_CAR""#), LegMode::Transit(TransitKind::Other));
+
+        let direction =
+            |name: &str| Direction::from(serde_json::from_str::<RawDirection>(name).unwrap());
+        assert_eq!(direction(r#""LEFT""#), Direction::Left);
+        // MOTIS spells some of them in more than one way.
+        assert_eq!(direction(r#""SLIGHT_RIGHT""#), Direction::SlightlyRight);
+        assert_eq!(direction(r#""SLIGHTLY_RIGHT""#), Direction::SlightlyRight);
+        assert_eq!(direction(r#""UTRUN_LEFT""#), Direction::UTurn);
+        assert_eq!(direction(r#""CIRCLE_CLOCKWISE""#), Direction::Roundabout);
+        // Unknown ones read as "continue".
+        assert_eq!(direction(r#""SOMETHING_NEW""#), Direction::Continue);
     }
 
     #[test]
