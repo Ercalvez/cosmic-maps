@@ -1,5 +1,5 @@
 # Name of the application's binary.
-name := 'cosmic-maps'
+name := 'cosmic-ext-maps'
 # The unique ID of the application.
 appid := 'com.github.ercalvez.cosmic-maps'
 

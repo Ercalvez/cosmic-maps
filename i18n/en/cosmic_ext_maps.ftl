@@ -1,4 +1,4 @@
-app-title = Cosmic Maps
+app-title = Maps
 about = About
 repository = Repository
 view = View

@@ -1,6 +1,8 @@
-# Cosmic Maps
+# Maps
 
-Map application for COSMIC Desktop
+Map application for the COSMIC™ desktop.
+
+Maps is a community project for the COSMIC™ desktop. It is not affiliated with or endorsed by System76, Inc. COSMIC™ is a trademark of System76, Inc.
 
 ![Public transit directions from Gare de Lyon to Gare Montparnasse in Paris, with both lines drawn on the map and the steps listed beside it](resources/screenshots/transit-directions.png)
 
@@ -34,7 +36,7 @@ If packaging for a Linux distribution, vendor dependencies locally with the `ven
 ```sh
 just vendor
 just build-vendored
-just rootdir=debian/cosmic-maps prefix=/usr install
+just rootdir=debian/cosmic-ext-maps prefix=/usr install
 ```
 
 It is recommended to build a source tarball with the vendored dependencies, which can typically be done by running `just vendor` on the host system before it enters the build environment.

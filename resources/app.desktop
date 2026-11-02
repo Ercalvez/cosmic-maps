@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=Cosmic Maps
-Comment=Map application for COSMIC Desktop
+Name=Maps
+Comment=Map application for the COSMIC™ desktop
 Type=Application
 Icon=com.github.ercalvez.cosmic-maps
-Exec=cosmic-maps %F
+Exec=cosmic-ext-maps %F
 Terminal=false
 StartupNotify=true
 Categories=COSMIC

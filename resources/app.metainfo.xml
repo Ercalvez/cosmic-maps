@@ -3,24 +3,25 @@
   <id>com.github.ercalvez.cosmic-maps</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MPL-2.0</project_license>
-  <name>Cosmic Maps</name>
-  <summary>Map application for COSMIC Desktop</summary>
+  <name>Maps</name>
+  <summary>Map application for the COSMIC™ desktop</summary>
+  <description>
+    <p>Map application for the COSMIC™ desktop.</p>
+    <p>Maps is a community project for the COSMIC™ desktop. It is not affiliated with or endorsed by System76, Inc. COSMIC™ is a trademark of System76, Inc.</p>
+  </description>
   <icon type="remote" width="64" height="64" scale="1">
-    https://github.com/Ercalvez/cosmic-maps/raw/main/resources/icons/hicolor/scalable/apps/icon.svg
+    https://github.com/Ercalvez/cosmic-ext-maps/raw/main/resources/icons/hicolor/scalable/apps/icon.svg
   </icon>
   <screenshots>
     <screenshot type="default">
       <caption>Public transit directions, with the route drawn on the map</caption>
-      <image type="source" width="1600" height="813">https://raw.githubusercontent.com/Ercalvez/cosmic-maps/main/resources/screenshots/transit-directions.png</image>
+      <image type="source" width="1600" height="813">https://raw.githubusercontent.com/Ercalvez/cosmic-ext-maps/main/resources/screenshots/transit-directions.png</image>
     </screenshot>
   </screenshots>
-  <url type="vcs-browser">https://github.com/Ercalvez/cosmic-maps</url>
+  <url type="vcs-browser">https://github.com/Ercalvez/cosmic-ext-maps</url>
   <launchable type="desktop-id">com.github.ercalvez.cosmic-maps.desktop</launchable>
   <provides>
-    <id>com.system76.CosmicApplication</id>
-    <binaries>
-      <binary>cosmic-maps</binary>
-    </binaries>
+    <binary>cosmic-ext-maps</binary>
   </provides>
   <requires>
     <display_length compare="ge">360</display_length>

@@ -1,10 +1,10 @@
 [package]
-name = "cosmic-maps"
+name = "cosmic-ext-maps"
 version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
-description = "Map application for COSMIC Desktop"
-repository = "https://github.com/Ercalvez/cosmic-maps"
+description = "Map application for the COSMIC™ desktop"
+repository = "https://github.com/Ercalvez/cosmic-ext-maps"
 
 [dependencies]
 i18n-embed = { version = "0.16", features = [

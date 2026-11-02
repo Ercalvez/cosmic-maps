@@ -15,7 +15,7 @@ mod services;
 
 fn main() -> cosmic::iced::Result {
     // Warnings by default, without those maplibre gives for every tile;
-    // `RUST_LOG=cosmic_maps=debug` shows more.
+    // `RUST_LOG=cosmic_ext_maps=debug` shows more.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
